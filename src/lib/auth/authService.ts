@@ -11,6 +11,8 @@ type RawUserRow = {
 	encryption_key_hint?: string | null;
 	encryption_notice_accepted?: boolean;
 	created_at?: string;
+	avatar_seed?: string | null;
+	avatar_url?: string | null;
 };
 
 function mapUser(row: RawUserRow): UserProfile {
@@ -20,7 +22,9 @@ function mapUser(row: RawUserRow): UserProfile {
 		systemRole: row.system_role,
 		encryptionReady: !!row.encryption_key_hint,
 		encryptionNoticeAccepted: !!row.encryption_notice_accepted,
-		createdAt: row.created_at
+		createdAt: row.created_at,
+		avatarSeed: row.avatar_seed ?? null,
+		avatarUrl: row.avatar_url ?? null
 	};
 }
 
@@ -28,7 +32,7 @@ export async function loginWithPassword(payload: LoginPayload) {
 	const passwordHash = await hashPassword(payload.password);
 	const { data, error } = await supabase
 		.from('amnesia_users')
-		.select('id, username, password_hash, password, system_role, encryption_key_hint, encryption_notice_accepted, created_at')
+		.select('id, username, password_hash, password, system_role, encryption_key_hint, encryption_notice_accepted, created_at, avatar_seed, avatar_url')
 		.eq('username', payload.username)
 		.maybeSingle();
 
@@ -74,6 +78,7 @@ export async function registerWithInvite(payload: RegisterPayload) {
 	const { error } = await supabase.from('amnesia_users').insert({
 		username: payload.username,
 		password_hash: passwordHash,
+		avatar_seed: payload.username,
 		system_role: payload.systemRole ?? '用户'
 	});
 
@@ -112,7 +117,7 @@ export async function setUserEncryptionReady(userId: EntityId, keyHint: string) 
 export async function listSystemUsers() {
 	const { data, error } = await supabase
 		.from('amnesia_users')
-		.select('id, username, system_role, encryption_key_hint, created_at')
+		.select('id, username, system_role, encryption_key_hint, created_at, avatar_seed, avatar_url')
 		.order('created_at', { ascending: true });
 
 	if (error) throw error;
@@ -127,4 +132,24 @@ export async function removeSystemUser(username: string) {
 	}
 
 	return { success: true, message: '用户已成功删除' };
+}
+
+export async function updateUserAvatar(input: {
+	userId: EntityId;
+	avatarSeed?: string | null;
+	avatarUrl?: string | null;
+}) {
+	const patch: Record<string, unknown> = {};
+	if (input.avatarSeed !== undefined) patch.avatar_seed = input.avatarSeed;
+	if (input.avatarUrl !== undefined) patch.avatar_url = input.avatarUrl;
+
+	const { data, error } = await supabase
+		.from('amnesia_users')
+		.update(patch)
+		.eq('id', input.userId)
+		.select('id, username, system_role, encryption_key_hint, encryption_notice_accepted, created_at, avatar_seed, avatar_url')
+		.single();
+
+	if (error) throw error;
+	return mapUser(data as RawUserRow);
 }

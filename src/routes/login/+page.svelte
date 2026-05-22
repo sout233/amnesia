@@ -59,7 +59,9 @@
 						role: matched.systemRole,
 						encryptionReady: matched.encryptionReady,
 						encryptionNoticeAccepted: matched.encryptionNoticeAccepted,
-						docEncryptionKey: await deriveDocEncryptionKey(password)
+						docEncryptionKey: await deriveDocEncryptionKey(password),
+						avatarSeed: matched.avatarSeed ?? matched.username,
+						avatarUrl: matched.avatarUrl ?? null
 					}
 				});
 				toast.success('登录成功！已加载工作台');

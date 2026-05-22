@@ -7,6 +7,8 @@ export interface User {
 	encryptionReady?: boolean;
 	encryptionNoticeAccepted?: boolean;
 	docEncryptionKey?: string;
+	avatarSeed?: string | null;
+	avatarUrl?: string | null;
 }
 
 export interface CustomSession {
@@ -17,11 +19,10 @@ class UserState {
 	session = $state<CustomSession | null>(null);
 
 	avatarUrl = $derived(
-		this.session?.user?.username === 'sout'
-			? 'https://api.dicebear.com/7.x/bottts/svg?seed=sout'
-			: this.session?.user?.username
-				? 'https://api.dicebear.com/7.x/bottts/svg?seed=' + this.session.user.username
-				: null
+		this.session?.user?.username
+			? this.session.user.avatarUrl ||
+				`https://api.dicebear.com/9.x/glass/svg?seed=${encodeURIComponent(this.session.user.avatarSeed || this.session.user.username)}`
+			: null
 	);
 
 	setSession(newSession: CustomSession | null) {

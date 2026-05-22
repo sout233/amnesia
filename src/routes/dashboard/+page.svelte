@@ -8,7 +8,7 @@
 	import { supabase } from '$lib/supabaseClient';
 	import { listAccessibleDocs, createDoc as createSpaceDoc, updateDoc } from '$lib/docs/docService';
 	import { decryptDocumentContent, deriveDocEncryptionKey, encryptDocumentContent } from '$lib/crypto/appCrypto';
-	import { loginWithPassword, setUserEncryptionReady } from '$lib/auth/authService';
+	import { loginWithPassword, setUserEncryptionReady, updateUserAvatar } from '$lib/auth/authService';
 	import { acceptTeamInvite, createTeam, createTeamInvite, listTeamInvites, listUserTeams } from '$lib/teams/teamService';
 	import type { DocSpaceType, TeamInviteRecord, TeamRecord } from '$lib/types/domain';
 	import { Editor } from '@tiptap/core';
@@ -21,8 +21,15 @@
 	import { marked } from 'marked';
 	import TurndownService from 'turndown';
 	import DOMPurify from 'dompurify';
+	import ThemedSelect, { type ThemedSelectOption } from '$lib/components/ThemedSelect.svelte';
 	import { EditorState } from '@codemirror/state';
-	import { EditorView, lineNumbers, highlightActiveLineGutter } from '@codemirror/view';
+	import {
+		EditorView,
+		lineNumbers,
+		highlightActiveLineGutter,
+		keymap,
+		scrollPastEnd
+	} from '@codemirror/view';
 	import { markdown as markdownLanguage } from '@codemirror/lang-markdown';
 
 	type DocRecord = {
@@ -60,7 +67,8 @@
 	let markdownEditorNode = $state<HTMLElement | null>(null);
 	let markdownEditorView: EditorView | null = null;
 	let markdownContent = $state('');
-	let editMode = $state<'rich' | 'markdown'>('rich');
+	let htmlContent = $state('');
+	let editMode = $state<'rich' | 'html' | 'markdown'>('rich');
 	let blockHandleVisible = $state(false);
 	let blockHandleTop = $state(0);
 	let blockHandleLeft = $state(0);
@@ -75,6 +83,7 @@
 	let showPageSettingsModal = $state(false);
 	let showPropertiesModal = $state(false);
 	let showEmojiPickerModal = $state(false);
+	let showUserProfileModal = $state(false);
 	let lockPage = $state(false);
 	let theme = $state('cupcake');
 	let pagePaddingX = $state(48);
@@ -86,6 +95,8 @@
 	let activeDocMenuId = $state<number | null>(null);
 	let selectedTextColor = $state('#111827');
 	let selectedHighlightColor = $state('#fef08a');
+	let activeTextColorState = $state('');
+	let activeHighlightColorState = $state('');
 	let docMenuPosition = $state({ top: 0, left: 0 });
 	let docMenuNode = $state<HTMLElement | null>(null);
 	let showTextColorModal = $state(false);
@@ -102,6 +113,8 @@
 	let showCreateFolderModal = $state(false);
 	let showEncryptionSetupModal = $state(false);
 	let showTeamWorkspaceModal = $state(false);
+	let showMarkdownWarningModal = $state(false);
+	let pendingEditMode = $state<'markdown' | null>(null);
 	let linkUrlInput = $state('');
 	let linkTextInput = $state('');
 	let imageUrlInput = $state('');
@@ -114,11 +127,14 @@
 	let newDocFolderInput = $state('');
 	let encryptionPasswordInput = $state('');
 	let currentTeamId = $state<string | number | null>(null);
+	let currentTeamIdValue = $state('');
 	let teams = $state<Array<TeamRecord & { memberRole?: string }>>([]);
 	let teamInvites = $state<TeamInviteRecord[]>([]);
 	let inviteTokenInput = $state('');
 	let newTeamName = $state('');
 	let newTeamSlug = $state('');
+	let savedEditorSelection = $state<{ from: number; to: number } | null>(null);
+	let avatarUploading = $state(false);
 
 	type EncryptedDocPayload = {
 		type: 'amnesia-encrypted-doc';
@@ -198,6 +214,131 @@
 		return (editor?.getAttributes('highlight')?.color as string | undefined) ?? '';
 	}
 
+	function rememberEditorSelection() {
+		if (!editor) return;
+		savedEditorSelection = {
+			from: editor.state.selection.from,
+			to: editor.state.selection.to
+		};
+	}
+
+	function restoreEditorSelection() {
+		if (!editor || !savedEditorSelection) return;
+		editor.chain().focus().setTextSelection(savedEditorSelection).run();
+	}
+
+	function openUserProfileModal() {
+		showUserProfileModal = true;
+		requestAnimationFrame(() => {
+			const panel = document.querySelector('.dashboard-user-profile-modal');
+			if (panel instanceof HTMLElement) {
+				animate(panel, {
+					opacity: [0, 1],
+					translateY: [18, 0],
+					scale: [0.97, 1],
+					duration: 260,
+					ease: 'outExpo'
+				});
+			}
+		});
+	}
+
+	function syncUserProfile(
+		nextUser: Partial<{
+			id?: string | number;
+			username: string;
+			role: import('$lib/types/domain').SystemRole;
+			encryptionReady?: boolean;
+			encryptionNoticeAccepted?: boolean;
+			docEncryptionKey?: string;
+			avatarSeed?: string | null;
+			avatarUrl?: string | null;
+		}>
+	) {
+		const session = userState.session;
+		if (!session) return;
+		userState.setSession({
+			user: {
+				...session.user,
+				...nextUser
+			}
+		});
+	}
+
+	async function randomizeUserAvatar() {
+		const session = userState.session;
+		if (!session?.user?.id) return;
+		const username = userState.session?.user?.username || 'amnesia';
+		const randomSeed = `${username}-${crypto.randomUUID()}`;
+		const updated = await updateUserAvatar({
+			userId: session.user.id,
+			avatarSeed: randomSeed,
+			avatarUrl: null
+		});
+		syncUserProfile({
+			avatarSeed: updated.avatarSeed ?? randomSeed,
+			avatarUrl: updated.avatarUrl ?? null
+		});
+		toast.success('已生成随机头像');
+	}
+
+	async function resetUserAvatar() {
+		const session = userState.session;
+		if (!session?.user?.id) return;
+		const username = userState.session?.user?.username || 'amnesia';
+		const updated = await updateUserAvatar({
+			userId: session.user.id,
+			avatarSeed: username,
+			avatarUrl: null
+		});
+		syncUserProfile({
+			avatarSeed: updated.avatarSeed ?? username,
+			avatarUrl: updated.avatarUrl ?? null
+		});
+		toast.success('已恢复默认头像');
+	}
+
+	async function uploadCustomAvatar(file: File) {
+		const session = userState.session;
+		if (!session?.user?.id) return;
+		if (!file.type.startsWith('image/')) {
+			toast.error('请上传图片文件');
+			return;
+		}
+		avatarUploading = true;
+		try {
+			const dataUrl = await new Promise<string>((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = () => {
+					if (typeof reader.result === 'string') resolve(reader.result);
+					else reject(new Error('头像读取失败'));
+				};
+				reader.onerror = () => reject(new Error('头像读取失败'));
+				reader.readAsDataURL(file);
+			});
+
+			const updated = await updateUserAvatar({
+				userId: session.user.id,
+				avatarUrl: dataUrl,
+				avatarSeed: session.user.avatarSeed || session.user.username
+			});
+			syncUserProfile({
+				avatarSeed: updated.avatarSeed ?? session.user.username,
+				avatarUrl: updated.avatarUrl ?? dataUrl
+			});
+			toast.success('自定义头像已上传');
+		} catch (error: any) {
+			toast.error(error?.message ?? '头像上传失败');
+		} finally {
+			avatarUploading = false;
+		}
+	}
+
+	function logoutCurrentUser() {
+		userState.setSession(null);
+		goto('/login');
+	}
+
 	const themeOptions: ThemeConfig[] = [
 		{
 			name: 'cupcake',
@@ -267,6 +408,59 @@
 		{ value: 'Noto Sans SC', label: 'Noto Sans SC' },
 		{ value: 'Maple Mono', label: 'Maple Mono' }
 	];
+
+	const teamSelectOptions = $derived.by<ThemedSelectOption[]>(() =>
+		teams.map((team) => ({
+			value: String(team.id),
+			label: team.name,
+			hint: team.memberRole ? `身份：${team.memberRole}` : undefined
+		}))
+	);
+
+	const createDocSpaceOptions = [
+		{ value: 'Amnesia 共享文章', label: '🌍 全局文章', hint: '所有用户都能看到' },
+		{ value: '团队工作区', label: '👥 团队文章', hint: '仅当前团队成员可见' },
+		{ value: '个人笔记', label: '🔒 私有文章', hint: '仅你自己可见并加密存储' }
+	] satisfies ThemedSelectOption[];
+
+	const themeSelectOptions = $derived.by<ThemedSelectOption[]>(() =>
+		themeOptions.map((option) => ({
+			value: option.name,
+			label: option.name,
+			hint:
+				option.name === 'cupcake'
+					? '奶油橙色、柔和玻璃感'
+					: option.name === 'shadcn'
+						? '纯黑白、高对比极简'
+						: option.name === 'ibm'
+							? '商务直角、理性克制'
+							: '拟物渐变、通透模糊'
+		}))
+	);
+
+	const fontSelectOptions = $derived.by<ThemedSelectOption[]>(() =>
+		fontOptions.map((option) => ({
+			value: option.value,
+			label: option.label
+		}))
+	);
+
+	const roleSelectOptions: ThemedSelectOption[] = [
+		{ value: 'root', label: 'root', hint: '系统最高权限' },
+		{ value: '管理员', label: '管理员', hint: '管理用户与团队' },
+		{ value: '用户', label: '用户', hint: '标准使用权限' }
+	];
+
+	const folderSelectOptions = $derived.by<ThemedSelectOption[]>(() => {
+		const folders = folderOptionsBySpace[newDocCategoryInput as keyof typeof folderOptionsBySpace] ?? [];
+		return [
+			{ value: '', label: '默认分组', hint: '直接放到当前空间根分组' },
+			...folders.map((folder) => ({
+				value: folder,
+				label: folder
+			}))
+		];
+	});
 
 	const categoryOptions = $derived.by(() => {
 		const categories = Array.from(new Set(docs.map((doc) => doc.category).filter(Boolean)));
@@ -440,6 +634,7 @@
 			teams.find((team) => team.id === previousTeamId)?.id ??
 			teams[0]?.id ??
 			null;
+		currentTeamIdValue = currentTeamId == null ? '' : String(currentTeamId);
 		if (currentTeamId) {
 			teamInvites = await listTeamInvites(currentTeamId);
 		} else {
@@ -472,6 +667,7 @@
 				syncActiveFormattingState();
 			}
 			syncMarkdownFromHtml(currentDoc.content);
+			htmlContent = currentDoc.content;
 		}
 	}
 
@@ -540,7 +736,9 @@
 	}
 
 	async function handleCurrentTeamChange(nextTeamId: string | number | null) {
-		currentTeamId = nextTeamId;
+		const normalizedTeamId = nextTeamId == null || nextTeamId === '' ? null : String(nextTeamId);
+		currentTeamId = normalizedTeamId;
+		currentTeamIdValue = normalizedTeamId ?? '';
 		if (currentTeamId) {
 			teamInvites = await listTeamInvites(currentTeamId);
 		} else {
@@ -625,6 +823,41 @@
 		});
 	}
 
+	function formatCompactDate(value?: string) {
+		if (!value) return '未记录';
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return '未记录';
+		return new Intl.DateTimeFormat('zh-CN', {
+			month: 'numeric',
+			day: 'numeric'
+		}).format(date);
+	}
+
+	const preserveTrailingBlankLinesKeymap = keymap.of([
+		{
+			key: 'Enter',
+			run(view) {
+				const { state } = view;
+				const selection = state.selection.main;
+				if (!selection.empty || selection.from !== state.doc.length) {
+					return false;
+				}
+
+				const lastLine = state.doc.lineAt(selection.from);
+				if (lastLine.text.trim().length > 0) {
+					return false;
+				}
+
+				view.dispatch({
+					changes: { from: selection.from, insert: '\n' },
+					selection: { anchor: selection.from + 1 },
+					scrollIntoView: true
+				});
+				return true;
+			}
+		}
+	]);
+
 	function initMarkdownEditor() {
 		if (!markdownEditorNode) return;
 		if (markdownEditorView) {
@@ -641,6 +874,8 @@
 					highlightActiveLineGutter(),
 					markdownLanguage(),
 					EditorView.lineWrapping,
+					scrollPastEnd(),
+					preserveTrailingBlankLinesKeymap,
 					EditorView.updateListener.of(async (update) => {
 						if (!update.docChanged) return;
 						markdownContent = update.state.doc.toString();
@@ -651,12 +886,39 @@
 		});
 	}
 
+	function initHtmlEditor() {
+		if (!markdownEditorNode) return;
+		if (markdownEditorView) {
+			markdownEditorView.destroy();
+			markdownEditorView = null;
+		}
+
+		markdownEditorView = new EditorView({
+			parent: markdownEditorNode,
+			state: EditorState.create({
+				doc: htmlContent,
+				extensions: [
+					lineNumbers(),
+					highlightActiveLineGutter(),
+					EditorView.lineWrapping,
+					scrollPastEnd(),
+					EditorView.updateListener.of((update) => {
+						if (!update.docChanged) return;
+						htmlContent = update.state.doc.toString();
+						markdownPreviewHtml = sanitizeHtml(htmlContent);
+					})
+				]
+			})
+		});
+	}
+
 	function syncMarkdownEditorDoc() {
 		if (!markdownEditorView) return;
+		const source = editMode === 'html' ? htmlContent : markdownContent;
 		const current = markdownEditorView.state.doc.toString();
-		if (current === markdownContent) return;
+		if (current === source) return;
 		markdownEditorView.dispatch({
-			changes: { from: 0, to: current.length, insert: markdownContent }
+			changes: { from: 0, to: current.length, insert: source }
 		});
 	}
 
@@ -942,29 +1204,38 @@
 
 	function applyTextColor(color: string) {
 		if (lockPage) return;
-		editor?.chain().focus().setColor(color).run();
+		selectedTextColor = color;
+		restoreEditorSelection();
+		editor?.chain().setColor(color).run();
+		syncActiveFormattingState();
 	}
 
 	function applyHighlightColor(color: string) {
 		if (lockPage) return;
-		editor?.chain().focus().setHighlight({ color }).run();
+		selectedHighlightColor = color;
+		restoreEditorSelection();
+		editor?.chain().setHighlight({ color }).run();
+		syncActiveFormattingState();
 	}
 
 	function resetTextColor() {
 		if (lockPage) return;
-		selectedTextColor = '';
-		editor?.chain().focus().unsetColor().run();
+		restoreEditorSelection();
+		editor?.chain().unsetColor().run();
+		activeTextColorState = '';
+		syncActiveFormattingState();
 	}
 
 	function resetHighlightColor() {
 		if (lockPage) return;
-		selectedHighlightColor = '';
-		editor?.chain().focus().unsetHighlight().run();
+		restoreEditorSelection();
+		editor?.chain().unsetHighlight().run();
+		activeHighlightColorState = '';
+		syncActiveFormattingState();
 	}
 
 	function toggleTextColorPicker() {
-		const activeColor = getActiveTextColor();
-		if (activeColor === selectedTextColor) {
+		if (activeTextColorState) {
 			resetTextColor();
 			return;
 		}
@@ -972,8 +1243,7 @@
 	}
 
 	function toggleHighlightColorPicker() {
-		const activeColor = getActiveHighlightColor();
-		if (activeColor === selectedHighlightColor) {
+		if (activeHighlightColorState) {
 			resetHighlightColor();
 			return;
 		}
@@ -983,15 +1253,21 @@
 	function syncActiveFormattingState() {
 		const activeTextColor = getActiveTextColor();
 		const activeHighlightColor = getActiveHighlightColor();
-		selectedTextColor = activeTextColor || '#111827';
-		selectedHighlightColor = activeHighlightColor || '#fef08a';
+		activeTextColorState = activeTextColor || '';
+		activeHighlightColorState = activeHighlightColor || '';
+		if (activeTextColor) {
+			selectedTextColor = activeTextColor;
+		}
+		if (activeHighlightColor) {
+			selectedHighlightColor = activeHighlightColor;
+		}
 	}
 
-	async function exportMarkdown() {
-		const currentDoc = docs[activeDocIndex];
-		if (!currentDoc) return;
-		const blob = new Blob([markdownContent], { type: 'text/markdown;charset=utf-8' });
-		const url = URL.createObjectURL(blob);
+async function exportMarkdown() {
+	const currentDoc = docs[activeDocIndex];
+	if (!currentDoc) return;
+	const blob = new Blob([markdownContent], { type: 'text/markdown;charset=utf-8' });
+	const url = URL.createObjectURL(blob);
 		const anchor = document.createElement('a');
 		anchor.href = url;
 		anchor.download = `${currentDoc.title}.md`;
@@ -999,24 +1275,33 @@
 		URL.revokeObjectURL(url);
 	}
 
-	async function importMarkdownFile(e: Event) {
-		const file = (e.currentTarget as HTMLInputElement).files?.[0];
-		if (!file) return;
-		markdownContent = await file.text();
-		markdownPreviewHtml = await marked.parse(markdownContent);
-		if (editMode === 'rich') {
-			await applyMarkdownToEditor(markdownContent);
-		} else {
-			syncMarkdownEditorDoc();
-		}
+async function importMarkdownFile(e: Event) {
+	const file = (e.currentTarget as HTMLInputElement).files?.[0];
+	if (!file) return;
+	markdownContent = await file.text();
+	markdownPreviewHtml = await marked.parse(markdownContent);
+	if (editMode === 'rich') {
+		await applyMarkdownToEditor(markdownContent);
+	} else if (editMode === 'html') {
+		htmlContent = markdownPreviewHtml;
+		syncMarkdownEditorDoc();
+	} else {
+		syncMarkdownEditorDoc();
 	}
+}
 
-	async function copyPageContent() {
-		const currentDoc = docs[activeDocIndex];
-		if (!currentDoc) return;
-		await navigator.clipboard.writeText(markdownContent || currentDoc.content);
-		toast.success('页面内容已复制');
-	}
+async function copyPageContent() {
+	const currentDoc = docs[activeDocIndex];
+	if (!currentDoc) return;
+	const textToCopy =
+		editMode === 'html'
+			? htmlContent || currentDoc.content
+			: editMode === 'markdown'
+				? markdownContent || currentDoc.content
+				: currentDoc.content;
+	await navigator.clipboard.writeText(textToCopy);
+	toast.success('页面内容已复制');
+}
 
 	const slashCommands = [
 		{
@@ -1178,8 +1463,21 @@
 			if (!(node instanceof HTMLElement)) return;
 			node.dataset.inlineStyled = 'true';
 		});
-		markdownContent = turndownService.turndown(temp.innerHTML).trim();
+		htmlContent = html;
+		markdownContent = turndownService.turndown(temp.innerHTML);
 		markdownPreviewHtml = html;
+	}
+
+	async function applyHtmlToEditor(html: string) {
+		if (!editor || !docs[activeDocIndex]) return;
+		const sanitizedHtml = sanitizeHtml(html);
+		editor.commands.setContent(sanitizedHtml, { emitUpdate: false });
+		docs[activeDocIndex].content = editor.getHTML();
+		htmlContent = docs[activeDocIndex].content;
+		markdownPreviewHtml = docs[activeDocIndex].content;
+		syncMarkdownFromHtml(docs[activeDocIndex].content);
+		syncActiveFormattingState();
+		triggerAutoSave();
 	}
 
 	async function applyMarkdownToEditor(markdown: string) {
@@ -1188,6 +1486,7 @@
 		const parsed = await marked.parse(markdown);
 		editor.commands.setContent(parsed, { emitUpdate: false });
 		docs[activeDocIndex].content = editor.getHTML();
+		htmlContent = docs[activeDocIndex].content;
 		markdownPreviewHtml = docs[activeDocIndex].content;
 		syncActiveFormattingState();
 		triggerAutoSave();
@@ -1334,22 +1633,47 @@
 			.run();
 	}
 
-	async function toggleEditMode(mode: 'rich' | 'markdown') {
+	async function toggleEditMode(mode: 'rich' | 'html' | 'markdown') {
 		if (mode === editMode) return;
 
 		if (mode === 'markdown') {
 			if (editor) {
-				markdownContent = docs[activeDocIndex]?.content || editor.getHTML();
-				markdownPreviewHtml = markdownContent;
+				syncMarkdownFromHtml(docs[activeDocIndex]?.content || editor.getHTML());
 			}
-			editMode = 'markdown';
-			await tick();
-			initMarkdownEditor();
+			pendingEditMode = 'markdown';
+			showMarkdownWarningModal = true;
 			return;
 		}
 
-		await applyMarkdownToEditor(markdownContent);
+		if (mode === 'html') {
+			htmlContent = docs[activeDocIndex]?.content || editor?.getHTML() || '';
+			markdownPreviewHtml = sanitizeHtml(htmlContent);
+			editMode = 'html';
+			await tick();
+			initHtmlEditor();
+			hideCommandMenu();
+			hideBlockHandle();
+			return;
+		}
+
+		if (editMode === 'markdown') {
+			await applyMarkdownToEditor(markdownContent);
+		} else if (editMode === 'html') {
+			await applyHtmlToEditor(htmlContent);
+		}
+
 		editMode = 'rich';
+		hideCommandMenu();
+		hideBlockHandle();
+	}
+
+	async function confirmMarkdownModeSwitch() {
+		showMarkdownWarningModal = false;
+		if (pendingEditMode !== 'markdown') return;
+		editMode = 'markdown';
+		pendingEditMode = null;
+		await tick();
+		initMarkdownEditor();
 		hideCommandMenu();
 		hideBlockHandle();
 	}
@@ -1372,6 +1696,7 @@
 				syncActiveFormattingState();
 			}
 			syncMarkdownFromHtml(currentDoc.content);
+			htmlContent = currentDoc.content;
 		}
 	}
 
@@ -1421,6 +1746,7 @@
 				titleNode.innerText = initialDoc.title;
 			}
 			syncMarkdownFromHtml(initialDoc.content);
+			htmlContent = initialDoc.content;
 
 			editor = new Editor({
 				element: editorNode,
@@ -1446,6 +1772,7 @@
 				onUpdate: ({ editor }) => {
 					if (docs[activeDocIndex]) {
 						docs[activeDocIndex].content = editor.getHTML();
+						htmlContent = docs[activeDocIndex].content;
 						if (editMode === 'rich') {
 							syncMarkdownFromHtml(docs[activeDocIndex].content);
 						}
@@ -1511,8 +1838,12 @@
 		<div class="flex flex-col overflow-y-auto overflow-x-visible p-2.5 space-y-3">
 
 			<!-- 用户资料块 -->
-			<div class="dashboard-list-row dashboard-sidebar-card flex items-center gap-2 p-1.5 rounded-xl cursor-pointer transition-all duration-200">
-				<div class="dashboard-avatar w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold font-mono overflow-hidden">
+			<button
+				type="button"
+				class="dashboard-list-row dashboard-sidebar-card w-full flex items-center gap-2 p-1.5 rounded-xl cursor-pointer transition-all duration-200 text-left"
+				onclick={openUserProfileModal}
+			>
+				<div class="dashboard-avatar w-7 h-7 ml-1 rounded-lg flex items-center justify-center text-xs font-bold font-mono overflow-hidden">
 					{#if userState.avatarUrl}
 						<img src={userState.avatarUrl} alt="Avatar" class="w-full h-full object-cover" />
 					{:else}
@@ -1523,15 +1854,11 @@
 					<p class="dashboard-strong font-bold text-xs truncate leading-none">
 						{userState.session?.user?.username || '游客'}
 					</p>
-					<!-- <p class="dashboard-muted text-[9px] tracking-wider mt-0.5 uppercase">
-						{#if userState.session}
-							已登录 ({userState.session.user.role})
-						{:else}
-							游客暂存态
-						{/if}
+					<!-- <p class="dashboard-muted text-[10px] mt-0.5 truncate">
+						{userState.session?.user?.role || '用户'}
 					</p> -->
 				</div>
-			</div>
+			</button>
 
 			<!-- 快速导航区 -->
 			<div class="space-y-0.5">
@@ -1540,7 +1867,7 @@
 					onclick={() => toast.info('🔍 检索服务正在筹备中...')}
 					class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs font-medium cursor-pointer"
 				>
-					<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="opacity-60"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0-14 0m18 11l-6-6"/></svg>
+					<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="opacity-60 ml-1"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0-14 0m18 11l-6-6"/></svg>
 					快速检索
 				</button>
 
@@ -1550,7 +1877,7 @@
 						onclick={() => { showUserManagement = true; refreshUsers(); }}
 						class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs font-medium cursor-pointer"
 					>
-						<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="opacity-60"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2m8-10a4 4 0 1 0 0-8a4 4 0 0 0 0 8m14 10v-2a4 4 0 0 0-3-3.87m-4-12a4 4 0 0 1 0 7.75"/></svg>
+						<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="opacity-60 ml-1"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2m8-10a4 4 0 1 0 0-8a4 4 0 0 0 0 8m14 10v-2a4 4 0 0 0-3-3.87m-4-12a4 4 0 0 1 0 7.75"/></svg>
 						用户管理
 					</button>
 				{/if}
@@ -1613,22 +1940,27 @@
 						{#if teams.length > 0}
 							<div class="dashboard-team-switcher px-2 py-2 rounded-xl dashboard-sidebar-card">
 								<div class="dashboard-section-label">当前团队</div>
-								<select class="dashboard-select mt-2" bind:value={currentTeamId} onchange={(e) => handleCurrentTeamChange((e.currentTarget as HTMLSelectElement).value)}>
-									{#each teams as team}
-										<option value={team.id}>{team.name} · {team.memberRole}</option>
-									{/each}
-								</select>
-								<div class="mt-2 text-[11px] dashboard-muted">
-									查看与编辑团队基础信息
+								<div class="flex items-center gap-1">
+								<div class="mt-2 w-full">
+									<ThemedSelect
+										bind:value={currentTeamIdValue}
+										options={teamSelectOptions}
+										placeholder="选择当前团队"
+										onChange={(value) => handleCurrentTeamChange(value)}
+									/>
 								</div>
-								<button type="button" class="dashboard-btn dashboard-btn-subtle w-full justify-center mt-2" onclick={() => showTeamWorkspaceModal = true}>
-									打开团队信息
-								</button>
+    								<button type="button" aria-label="查看团队信息" class="dashboard-btn dashboard-btn-subtle w-12 justify-center mt-2" onclick={() => showTeamWorkspaceModal = true}>
+    								    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+    												<path d="M0 0h24v24H0z" fill="none" />
+    												<path fill="currentColor" d="M2 22a8 8 0 1 1 16 0zm8-9c-3.315 0-6-2.685-6-6s2.685-6 6-6s6 2.685 6 6s-2.685 6-6 6m7.363 2.233A7.505 7.505 0 0 1 22.983 22H20c0-2.61-1-4.986-2.637-6.767m-2.023-2.276A7.98 7.98 0 0 0 18 7a7.96 7.96 0 0 0-1.015-3.903A5 5 0 0 1 21 8a5 5 0 0 1-5.66 4.957" />
+    									</svg>
+    								</button>
+    							</div>
 							</div>
 						{:else}
 							<div class="px-2 py-1 text-[11px] dashboard-muted">暂无团队，请先创建或加入团队</div>
 						{/if}
-						{#each docs.filter(d => d.category === '团队工作区') as doc}
+						{#each docs.filter((d) => d.space_type === 'team' && String(d.team_id ?? '') === currentTeamIdValue) as doc}
 							{@const index = docs.findIndex(d => d.id === doc.id)}
 							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
 								<button
@@ -1702,13 +2034,6 @@
 				<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15a3 3 0 1 0 0-6a3 3 0 0 0 0 6m7.94-2a8.99 8.99 0 0 0 .06-1a8.99 8.99 0 0 0-.06-1l2.12-1.65l-2-3.46l-2.49 1a9.2 9.2 0 0 0-1.73-1l-.38-2.65h-4l-.38 2.65a9.2 9.2 0 0 0-1.73 1l-2.49-1l-2 3.46L4.06 11a8.99 8.99 0 0 0-.06 1a8.99 8.99 0 0 0 .06 1l-2.12 1.65l2 3.46l2.49-1c.53.42 1.11.76 1.73 1l.38 2.65h4l.38-2.65c.62-.24 1.2-.58 1.73-1l2.49 1l2-3.46z"/></svg>
 				全局设置
 			</button>
-			<a
-				href="/logout"
-				class="dashboard-list-row dashboard-sidebar-entry w-full flex items-center gap-2 p-2 rounded-lg text-xs font-bold cursor-pointer transition-all duration-200"
-			>
-				<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2m7-2H9m11-3l3 3l-3 3"/></svg>
-				登出
-			</a>
 		</div>
 	</div>
 
@@ -1788,7 +2113,9 @@
 
 				<div class="mb-5 flex items-center gap-3 text-xs dashboard-muted">
 					<span class="dashboard-chip px-2.5 py-1 font-semibold">/{activeDoc?.category || '未分类'}</span>
-					<span>{editMode === 'rich' ? '所见即所得编辑' : 'Markdown 结构编辑'}</span>
+					<span>
+						创建于 {formatCompactDate(activeDoc?.created_at)} · 更新于 {formatCompactDate(activeDoc?.updated_at)}
+					</span>
 				</div>
 
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -1811,16 +2138,16 @@
 				>
 					<div
 						bind:this={editorNode}
-						class="tiptap-editor-container {editMode === 'markdown' ? 'hidden-editor' : ''}"
+						class="tiptap-editor-container {editMode !== 'rich' ? 'hidden-editor' : ''}"
 						style={`font-size:${docFontSize}px; --dashboard-doc-font:${docFontFamily};`}
 						onclick={hideCommandMenu}
 					></div>
 
-					{#if editMode === 'markdown'}
+					{#if editMode === 'markdown' || editMode === 'html'}
 						<div class="markdown-split-view">
 							<div bind:this={markdownEditorNode} class="markdown-editor-host"></div>
 							<div class="markdown-preview">
-								<div class="markdown-preview-label">Preview</div>
+								<div class="markdown-preview-label">{editMode === 'html' ? 'HTML Preview' : 'Markdown Preview'}</div>
 								<div class="markdown-preview-body">
 									{@html markdownPreviewHtml}
 								</div>
@@ -1882,6 +2209,13 @@
 							>
 								Markdown
 							</button>
+							<button
+								type="button"
+								onclick={() => toggleEditMode('html')}
+								class="dashboard-mode-toggle dashboard-mode-toggle-mono {editMode === 'html' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+							>
+								HTML
+							</button>
 
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
 
@@ -1917,12 +2251,16 @@
 							>
 								&lt;/&gt;
 							</button>
-							<button type="button" onclick={insertLink} class="dashboard-toolbar-btn" title="插入链接" aria-label="插入链接">
-								<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10a5 5 0 0 1 7.54.54l.92.93a5 5 0 0 1 0 7.07l-3 3a5 5 0 0 1-7.07 0l-1-1m1.61-8.69a5 5 0 0 1-7.07 0l-1-1a5 5 0 0 1 0-7.07l3-3a5 5 0 0 1 7.07 0l.92.93A5 5 0 0 1 11 14"/></svg>
-							</button>
-							<button type="button" onclick={insertImage} class="dashboard-toolbar-btn" title="插入图片" aria-label="插入图片">
-								<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2m3 6h.01M21 15l-5-5L5 21"/></svg>
-							</button>
+							<div class="tooltip" data-tip="插入链接">
+								<button type="button" onclick={insertLink} class="dashboard-toolbar-btn" title="插入链接" aria-label="插入链接">
+									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10a5 5 0 0 1 7.54.54l.92.93a5 5 0 0 1 0 7.07l-3 3a5 5 0 0 1-7.07 0l-1-1m1.61-8.69a5 5 0 0 1-7.07 0l-1-1a5 5 0 0 1 0-7.07l3-3a5 5 0 0 1 7.07 0l.92.93A5 5 0 0 1 11 14"/></svg>
+								</button>
+							</div>
+							<div class="tooltip" data-tip="插入图片">
+								<button type="button" onclick={insertImage} class="dashboard-toolbar-btn" title="插入图片" aria-label="插入图片">
+									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2m3 6h.01M21 15l-5-5L5 21"/></svg>
+								</button>
+							</div>
 							<button type="button" onclick={insertSafeHtml} class="dashboard-toolbar-btn">HTML</button>
 
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
@@ -1990,53 +2328,66 @@
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
 
 							<div class="relative">
+							    <div class="tooltip" data-tip="文本颜色">
 								<button
 									type="button"
-									class="dashboard-toolbar-btn font-black {getActiveTextColor() ? 'is-active' : ''}"
+									class="dashboard-toolbar-btn font-black {activeTextColorState ? 'is-active' : ''}"
+									style={`color:${activeTextColorState || selectedTextColor || 'var(--dashboard-fg)'};`}
 									onclick={toggleTextColorPicker}
 									oncontextmenu={(e) => {
 										e.preventDefault();
+										rememberEditorSelection();
+										syncActiveFormattingState();
 										showTextColorModal = true;
 										showHighlightColorModal = false;
 									}}
 									title="文本颜色"
 								>A</button>
+								</div>
 							</div>
 
 							<div class="relative">
-								<button
-									type="button"
-									class="dashboard-toolbar-btn font-black {getActiveHighlightColor() ? 'is-active' : ''}"
-									onclick={toggleHighlightColorPicker}
-									oncontextmenu={(e) => {
-										e.preventDefault();
-										showHighlightColorModal = true;
-										showTextColorModal = false;
-									}}
-									title="文字背景色"
-								><span class="dashboard-highlight-chip">A</span></button>
+								<div class="tooltip" data-tip="文字背景色">
+									<button
+										type="button"
+										class="dashboard-toolbar-btn font-black {activeHighlightColorState ? 'is-active' : ''}"
+										onclick={toggleHighlightColorPicker}
+										oncontextmenu={(e) => {
+											e.preventDefault();
+											rememberEditorSelection();
+											syncActiveFormattingState();
+											showHighlightColorModal = true;
+											showTextColorModal = false;
+										}}
+										title="文字背景色"
+									><span class="dashboard-highlight-chip" style={`background:${activeHighlightColorState || selectedHighlightColor || 'color-mix(in oklab, var(--dashboard-accent) 20%, transparent)'};`}>A</span></button>
+								</div>
 							</div>
 
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
 
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().undo().run()}
-								disabled={!editor.can().chain().focus().undo().run()}
-								class="dashboard-toolbar-btn"
-								title="撤销"
-							>
-								↩
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().redo().run()}
-								disabled={!editor.can().chain().focus().redo().run()}
-								class="dashboard-toolbar-btn"
-								title="重做"
-							>
-								↪
-							</button>
+							<div class="tooltip" data-tip="撤销">
+								<button
+									type="button"
+									onclick={() => editor?.chain().focus().undo().run()}
+									disabled={!editor.can().chain().focus().undo().run()}
+									class="dashboard-toolbar-btn"
+									title="撤销"
+								>
+									↩
+								</button>
+							</div>
+							<div class="tooltip" data-tip="重做">
+								<button
+									type="button"
+									onclick={() => editor?.chain().focus().redo().run()}
+									disabled={!editor.can().chain().focus().redo().run()}
+									class="dashboard-toolbar-btn"
+									title="重做"
+								>
+									↪
+								</button>
+							</div>
 							</div>
 						</div>
 					{/if}
@@ -2093,7 +2444,12 @@
 		</button>
 		<div class="doc-menu-divider"></div>
 		<button type="button" class="doc-menu-item is-danger" onclick={deleteActiveDoc}>
-			<span class="doc-menu-icon">⌫</span>
+			<span class="doc-menu-icon" aria-hidden="true">
+				<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+					<path d="M0 0h24v24H0z" fill="none" />
+					<path fill="currentColor" d="M12 0a12 12 0 1 0 12 12A12 12 0 0 0 12 0M5.29 5.29a9.63 9.63 0 0 1 12.23-1a.26.26 0 0 1 0 .4L4.67 17.56a.27.27 0 0 1-.4 0a9.49 9.49 0 0 1 1-12.24Zm13.46 13.47a9.53 9.53 0 0 1-12.23 1a.26.26 0 0 1 0-.4L19.37 6.49a.26.26 0 0 1 .4 0a9.49 9.49 0 0 1-1 12.24Z" />
+				</svg>
+			</span>
 			<span class="doc-menu-copy">
 				<span class="doc-menu-title">删除</span>
 				<span class="doc-menu-desc">移除此文章</span>
@@ -2122,6 +2478,66 @@
 	</div>
 {/if}
 
+{#if showUserProfileModal}
+	<div class="dashboard-modal-backdrop" onclick={() => showUserProfileModal = false}>
+		<div class="dashboard-modal-box dashboard-modal-medium dashboard-user-profile-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="dashboard-modal-header">
+				<h3 class="dashboard-modal-title">个人信息</h3>
+				<button type="button" class="dashboard-icon-btn" onclick={() => showUserProfileModal = false}>✕</button>
+			</div>
+			<div class="dashboard-modal-body">
+				<div class="flex items-center gap-4">
+					<div class="dashboard-user-avatar-preview">
+						{#if userState.avatarUrl}
+							<img src={userState.avatarUrl} alt="用户头像" class="h-full w-full object-cover" />
+						{:else}
+							AM
+						{/if}
+					</div>
+					<div class="min-w-0">
+						<div class="dashboard-strong text-base font-bold">{userState.session?.user?.username || '游客'}</div>
+						<div class="dashboard-helper-text mt-1">默认头像使用 DiceBear `9.x/glass` 风格，也支持上传你自己的头像。</div>
+					</div>
+				</div>
+				<div class="flex flex-wrap gap-2">
+					<label class="dashboard-btn dashboard-btn-primary cursor-pointer">
+						上传头像
+						<input
+							type="file"
+							accept="image/*"
+							class="hidden"
+							onchange={(e) => {
+								const file = (e.currentTarget as HTMLInputElement).files?.[0];
+								if (file) uploadCustomAvatar(file);
+								(e.currentTarget as HTMLInputElement).value = '';
+							}}
+						/>
+					</label>
+					<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={randomizeUserAvatar}>随机生成</button>
+					<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={resetUserAvatar}>恢复默认</button>
+				</div>
+				{#if avatarUploading}
+					<div class="dashboard-helper-text">头像上传中...</div>
+				{/if}
+			</div>
+			<div class="dashboard-modal-actions dashboard-user-profile-actions">
+				<button
+					type="button"
+					class="dashboard-btn dashboard-btn-danger dashboard-user-logout-btn"
+					onclick={() => {
+						showUserProfileModal = false;
+						logoutCurrentUser();
+					}}
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2m7-2H9m11-3l3 3l-3 3"/></svg>
+					登出
+				</button>
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showUserProfileModal = false}>关闭</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
 {#if showTextColorModal}
 	<div class="dashboard-modal-backdrop" onclick={() => showTextColorModal = false}>
 		<div class="dashboard-modal-box dashboard-modal-medium" onclick={(e) => e.stopPropagation()}>
@@ -2130,12 +2546,12 @@
 				<div class="color-preview h-14" style={`background:${selectedTextColor || '#111827'};`}></div>
 				<div class="grid grid-cols-6 gap-2">
 					{#each ['oklch(0.22 0.03 258)', 'oklch(0.32 0.12 260)', 'oklch(0.55 0.18 25)', 'oklch(0.62 0.17 145)', 'oklch(0.68 0.15 330)', 'oklch(0.8 0.08 95)', 'oklch(0.92 0.01 250)', 'oklch(0.45 0.2 15)', 'oklch(0.35 0.11 220)', 'oklch(0.72 0.16 80)', 'oklch(0.58 0.22 345)', 'oklch(0.28 0.02 260)'] as color}
-						<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedTextColor = color; applyTextColor(color); }} aria-label={`文本颜色 ${color}`} title={`文本颜色 ${color}`}></button>
+						<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedTextColor = color; applyTextColor(color); syncActiveFormattingState(); }} aria-label={`文本颜色 ${color}`} title={`文本颜色 ${color}`}></button>
 					{/each}
 				</div>
-				<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={textColorControls.l} oninput={applyCurrentTextColor} class="range theme-range" /></label>
-				<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={textColorControls.c} oninput={applyCurrentTextColor} class="range theme-range hue-range" /></label>
-				<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={textColorControls.h} oninput={applyCurrentTextColor} class="range theme-range rainbow-range" /></label>
+				<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={textColorControls.l} oninput={applyCurrentTextColor} class="theme-range lightness-range" /></label>
+				<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={textColorControls.c} oninput={applyCurrentTextColor} class="theme-range chroma-range" /></label>
+				<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={textColorControls.h} oninput={applyCurrentTextColor} class="theme-range hue-range" /></label>
 			</div>
 			<div class="dashboard-modal-actions">
 				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={resetTextColor}>恢复默认</button>
@@ -2153,12 +2569,12 @@
 				<div class="color-preview h-14" style={`background:${selectedHighlightColor || '#fef08a'};`}></div>
 				<div class="grid grid-cols-6 gap-2">
 					{#each ['oklch(0.96 0.08 95)', 'oklch(0.95 0.09 50)', 'oklch(0.92 0.08 145)', 'oklch(0.93 0.08 250)', 'oklch(0.9 0.11 330)', 'oklch(0.87 0.13 20)', 'oklch(0.84 0.1 80)', 'oklch(0.91 0.06 220)', 'oklch(0.89 0.05 20)', 'oklch(0.97 0.03 260)', 'oklch(0.88 0.12 300)', 'oklch(0.82 0.1 170)'] as color}
-						<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedHighlightColor = color; applyHighlightColor(color); }} aria-label={`背景颜色 ${color}`} title={`背景颜色 ${color}`}></button>
+						<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedHighlightColor = color; applyHighlightColor(color); syncActiveFormattingState(); }} aria-label={`背景颜色 ${color}`} title={`背景颜色 ${color}`}></button>
 					{/each}
 				</div>
-				<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={highlightColorControls.l} oninput={applyCurrentHighlightColor} class="range theme-range" /></label>
-				<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={highlightColorControls.c} oninput={applyCurrentHighlightColor} class="range theme-range hue-range" /></label>
-				<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={highlightColorControls.h} oninput={applyCurrentHighlightColor} class="range theme-range rainbow-range" /></label>
+				<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={highlightColorControls.l} oninput={applyCurrentHighlightColor} class="theme-range lightness-range" /></label>
+				<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={highlightColorControls.c} oninput={applyCurrentHighlightColor} class="theme-range chroma-range" /></label>
+				<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={highlightColorControls.h} oninput={applyCurrentHighlightColor} class="theme-range hue-range" /></label>
 			</div>
 			<div class="dashboard-modal-actions">
 				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={resetHighlightColor}>恢复默认</button>
@@ -2275,11 +2691,11 @@
 			</div>
 			<div class="dashboard-field">
 				<span class="dashboard-field-label">文章空间</span>
-				<select bind:value={newDocCategoryInput} class="dashboard-select">
-					<option value="Amnesia 共享文章">🌍 全局文章</option>
-					<option value="团队工作区">👥 团队文章</option>
-					<option value="个人笔记">🔒 私有文章</option>
-				</select>
+				<ThemedSelect
+					bind:value={newDocCategoryInput}
+					options={createDocSpaceOptions}
+					placeholder="选择文章空间"
+				/>
 			</div>
 			<div class="dashboard-field">
 				<div class="flex items-center justify-between gap-3">
@@ -2287,12 +2703,13 @@
 					<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={openCreateFolderModal}>新建文件夹</button>
 				</div>
 				{#if folderOptionsBySpace[newDocCategoryInput as keyof typeof folderOptionsBySpace].length > 0}
-					<select bind:value={newDocFolderInput} class="dashboard-select mt-2">
-						<option value="">默认分组</option>
-						{#each folderOptionsBySpace[newDocCategoryInput as keyof typeof folderOptionsBySpace] as folder}
-							<option value={folder}>{folder}</option>
-						{/each}
-					</select>
+					<div class="mt-2">
+						<ThemedSelect
+							bind:value={newDocFolderInput}
+							options={folderSelectOptions}
+							placeholder="选择子文件夹"
+						/>
+					</div>
 				{:else}
 					<input bind:value={newDocFolderInput} class="dashboard-input mt-2" placeholder="留空则进入默认分组" />
 				{/if}
@@ -2321,6 +2738,35 @@
 	</div>
 {/if}
 
+{#if showMarkdownWarningModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box dashboard-modal-medium">
+			<h3 class="dashboard-modal-title">切换到 Markdown 编辑</h3>
+			<div class="dashboard-helper-text">
+				格式可能无法完全转换。颜色、高亮和部分自定义 HTML 结构在 Markdown 模式下可能会丢失。
+			</div>
+			<div class="dashboard-helper-text">
+				如果继续，我们会尽量把当前文章转成 Markdown；你编辑完成后，再把 Markdown 重新转换成 HTML 文档。
+			</div>
+			<div class="dashboard-modal-actions">
+				<button
+					type="button"
+					class="dashboard-btn dashboard-btn-subtle"
+					onclick={() => {
+						showMarkdownWarningModal = false;
+						pendingEditMode = null;
+					}}
+				>
+					取消
+				</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmMarkdownModeSwitch}>
+					继续进入 Markdown
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
 {#if showTeamWorkspaceModal}
 	<div class="dashboard-modal-backdrop" onclick={() => showTeamWorkspaceModal = false}>
 		<div class="dashboard-modal-box dashboard-modal-large" onclick={(e) => e.stopPropagation()}>
@@ -2340,11 +2786,12 @@
 				<div class="space-y-3">
 					<div class="dashboard-section-label">管理与加入</div>
 					{#if teams.length > 0}
-						<select class="dashboard-select" bind:value={currentTeamId} onchange={(e) => handleCurrentTeamChange((e.currentTarget as HTMLSelectElement).value)}>
-							{#each teams as team}
-								<option value={team.id}>{team.name} · {team.memberRole}</option>
-							{/each}
-						</select>
+						<ThemedSelect
+							bind:value={currentTeamIdValue}
+							options={teamSelectOptions}
+							placeholder="选择团队"
+							onChange={(value) => handleCurrentTeamChange(value)}
+						/>
 						<button type="button" class="dashboard-btn dashboard-btn-subtle w-full justify-center" onclick={handleCreateInvite}>
 							生成邀请令牌
 						</button>
@@ -2369,7 +2816,19 @@
 		<div class="dashboard-modal-box dashboard-modal-medium">
 			<h3 class="dashboard-modal-title">初始化文档加密</h3>
 			<div class="dashboard-helper-text">
-				文档在上传前会使用你的密码派生密钥进行加密。此设置只允许初始化一次，之后无法修改，请确认后继续。
+				为了保护你的私有文章，Amnesia 会在文档上传前先在浏览器本地完成加密，再把密文存进数据库。
+			</div>
+			<div class="dashboard-helper-text">
+				目前的逻辑是：先使用你的登录密码通过本地派生逻辑生成文档密钥，再用 Web Crypto API 的 <strong>AES-GCM</strong> 算法对私有文章内容加密；数据库里保存的是密文、随机 IV 和版本信息，而不是可直接阅读的正文。
+			</div>
+			<div class="dashboard-helper-text">
+				之所以这样做，是因为站长 <strong>sout</strong> 不想在数据库里直接看到其他用户的私人文章内容，所以即使我去翻数据库，也应该尽量只能看到一坨看不懂的密文，而不是你的正文。
+			</div>
+			<div class="dashboard-helper-text">
+				这意味着：你的私有文章默认会以“先本地加密、再上传”的方式保存；只有输入正确的登录密码，浏览器才能重新派生出同一把密钥并解密内容。这个初始化只允许设置一次，之后无法修改，请确认你已经理解这个机制。
+			</div>
+			<div class="dashboard-helper-text">
+				请输入你当前账号的登录密码来确认并生成文档加密密钥。如果以后忘记登录密码，私有文章内容也会随之无法恢复，请务必自行保管好密码。
 			</div>
 			<div class="dashboard-field">
 				<span class="dashboard-field-label">输入你的登录密码</span>
@@ -2430,23 +2889,21 @@
 					{#if globalSettingsSection === 'appearance'}
 						<div class="dashboard-field">
 							<span class="dashboard-field-label">主题</span>
-							<select bind:value={theme} onchange={() => { applyTheme(); persistDashboardSettings(); }} class="dashboard-select w-full">
-								{#each themeOptions as option}
-									<option value={option.name}>{option.name}</option>
-								{/each}
-							</select>
+							<ThemedSelect
+								bind:value={theme}
+								options={themeSelectOptions}
+								placeholder="选择主题"
+								onChange={() => { applyTheme(); persistDashboardSettings(); }}
+							/>
 						</div>
 						<div class="dashboard-field">
 							<span class="dashboard-field-label">全局界面字体</span>
-							<select
+							<ThemedSelect
 								bind:value={globalUiFont}
-								onchange={() => { applyTheme(); persistDashboardSettings(); }}
-								class="dashboard-select w-full"
-							>
-								{#each fontOptions as option}
-									<option value={option.value}>{option.label}</option>
-								{/each}
-							</select>
+								options={fontSelectOptions}
+								placeholder="选择全局字体"
+								onChange={() => { applyTheme(); persistDashboardSettings(); }}
+							/>
 						</div>
 						<div class="dashboard-placeholder-grid">
 							<div class="dashboard-placeholder-card">
@@ -2521,11 +2978,12 @@
 				</div>
 				<label class="dashboard-field">
 					<span class="dashboard-field-label">字体</span>
-					<select bind:value={docFontFamily} onchange={() => { applyTheme(); persistDashboardSettings(); }} class="dashboard-select w-full">
-						{#each fontOptions as option}
-							<option value={option.value}>{option.label}</option>
-						{/each}
-					</select>
+					<ThemedSelect
+						bind:value={docFontFamily}
+						options={fontSelectOptions}
+						placeholder="选择页面字体"
+						onChange={() => { applyTheme(); persistDashboardSettings(); }}
+					/>
 				</label>
 				<label class="dashboard-checkbox-row">
 					<input type="checkbox" class="dashboard-checkbox" bind:checked={lockPage} onchange={persistDashboardSettings} />
@@ -2641,15 +3099,11 @@
 					</div>
 					<div class="space-y-1">
 						<label for="new-role" class="dashboard-input-label">选择权限</label>
-						<select
-							id="new-role"
+						<ThemedSelect
 							bind:value={newRole}
-							class="dashboard-select"
-						>
-							<option value="root">root</option>
-							<option value="管理员">管理员</option>
-							<option value="用户">用户</option>
-						</select>
+							options={roleSelectOptions}
+							placeholder="选择权限"
+						/>
 					</div>
 				</div>
 				<button
@@ -2863,6 +3317,32 @@
 		background: color-mix(in oklab, var(--dashboard-accent) 22%, var(--dashboard-panel));
 		color: var(--dashboard-fg);
 		border: 1px solid var(--dashboard-border);
+	}
+
+	.dashboard-user-avatar-preview {
+		display: flex;
+		height: 4.75rem;
+		width: 4.75rem;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+		overflow: hidden;
+		border: 1px solid var(--dashboard-border);
+		border-radius: calc(var(--dashboard-radius) * 0.8);
+		background: color-mix(in oklab, var(--dashboard-panel) 88%, var(--dashboard-bg));
+		box-shadow: 0 10px 24px var(--dashboard-shadow-color);
+		font-size: 1.25rem;
+		font-weight: 800;
+		color: var(--dashboard-fg);
+	}
+
+	.dashboard-user-profile-actions {
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.dashboard-user-logout-btn {
+		margin-right: auto;
 	}
 
 	.status-dot {
@@ -3150,8 +3630,7 @@
 		color: var(--dashboard-soft-fg);
 	}
 
-	.dashboard-input,
-	.dashboard-select {
+	.dashboard-input {
 		width: 100%;
 		min-height: 2.6rem;
 		border: 1px solid var(--dashboard-border);
@@ -3171,8 +3650,7 @@
 		line-height: 1.6;
 	}
 
-	.dashboard-input:focus,
-	.dashboard-select:focus {
+	.dashboard-input:focus {
 		border-color: color-mix(in oklab, var(--dashboard-accent) 46%, var(--dashboard-fg));
 		box-shadow: 0 0 0 3px color-mix(in oklab, var(--dashboard-accent) 14%, transparent);
 	}
@@ -3925,41 +4403,141 @@
 
 	.theme-range {
 		margin-top: 0.35rem;
+		-webkit-appearance: none;
 		appearance: none;
-		height: 0.5rem;
-		border-radius: 999px;
+		width: 100%;
+		height: 1.35rem;
+		border: none;
+		outline: none;
 		background: transparent;
+		padding: 0;
+		cursor: pointer;
+		touch-action: pan-x;
+		position: relative;
+		z-index: 1;
+	}
+
+	.theme-range:focus-visible {
+		outline: 2px solid color-mix(in oklab, var(--dashboard-accent) 42%, transparent);
+		outline-offset: 0.2rem;
+		border-radius: 999px;
 	}
 
 	.theme-range::-webkit-slider-runnable-track {
-		height: 0.5rem;
+		height: 0.95rem;
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 12%, transparent);
 		border-radius: 999px;
 		background:
 			linear-gradient(
 				90deg,
-				color-mix(in oklab, var(--dashboard-bg) 92%, black),
+				color-mix(in oklab, var(--dashboard-bg) 92%, black 8%),
 				color-mix(in oklab, var(--dashboard-panel) 72%, var(--dashboard-accent)),
 				color-mix(in oklab, white 84%, var(--dashboard-accent))
 			);
+		box-shadow:
+			inset 0 1px 2px color-mix(in oklab, black 10%, transparent),
+			0 1px 0 color-mix(in oklab, white 10%, transparent);
 	}
 
 	.theme-range::-webkit-slider-thumb {
+		-webkit-appearance: none;
 		appearance: none;
-		margin-top: -4px;
-		width: 1rem;
-		height: 1rem;
+		margin-top: -0.08rem;
+		width: 1.2rem;
+		height: 1.2rem;
 		border-radius: 999px;
-		border: 2px solid var(--dashboard-panel);
-		background: var(--dashboard-fg);
-		box-shadow: 0 2px 10px var(--dashboard-shadow-color);
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 14%, transparent);
+		background:
+			radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.18) 42%, rgba(255, 255, 255, 0) 43%),
+			color-mix(in oklab, var(--dashboard-panel) 92%, white 8%);
+		box-shadow:
+			0 4px 12px color-mix(in oklab, var(--dashboard-shadow-color) 55%, transparent),
+			0 1px 0 rgba(255, 255, 255, 0.35);
+	}
+
+	.theme-range::-moz-range-track {
+		height: 0.95rem;
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 12%, transparent);
+		border-radius: 999px;
+		background:
+			linear-gradient(
+				90deg,
+				color-mix(in oklab, var(--dashboard-bg) 92%, black 8%),
+				color-mix(in oklab, var(--dashboard-panel) 72%, var(--dashboard-accent)),
+				color-mix(in oklab, white 84%, var(--dashboard-accent))
+			);
+		box-shadow:
+			inset 0 1px 2px color-mix(in oklab, black 10%, transparent),
+			0 1px 0 color-mix(in oklab, white 10%, transparent);
+	}
+
+	.theme-range::-moz-range-thumb {
+		width: 1.2rem;
+		height: 1.2rem;
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 14%, transparent);
+		border-radius: 999px;
+		background:
+			radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.18) 42%, rgba(255, 255, 255, 0) 43%),
+			color-mix(in oklab, var(--dashboard-panel) 92%, white 8%);
+		box-shadow:
+			0 4px 12px color-mix(in oklab, var(--dashboard-shadow-color) 55%, transparent),
+			0 1px 0 rgba(255, 255, 255, 0.35);
+	}
+
+	.lightness-range::-webkit-slider-runnable-track {
+		background: linear-gradient(90deg, oklch(0.18 0 0), oklch(1 0 0));
+	}
+
+	.lightness-range::-moz-range-track {
+		background: linear-gradient(90deg, oklch(0.18 0 0), oklch(1 0 0));
+	}
+
+	.chroma-range::-webkit-slider-runnable-track {
+		background: linear-gradient(
+			90deg,
+			oklch(0.72 0 25),
+			oklch(0.72 0.08 25),
+			oklch(0.72 0.16 25),
+			oklch(0.72 0.24 25),
+			oklch(0.72 0.32 25)
+		);
+	}
+
+	.chroma-range::-moz-range-track {
+		background: linear-gradient(
+			90deg,
+			oklch(0.72 0 25),
+			oklch(0.72 0.08 25),
+			oklch(0.72 0.16 25),
+			oklch(0.72 0.24 25),
+			oklch(0.72 0.32 25)
+		);
 	}
 
 	.hue-range::-webkit-slider-runnable-track {
-		background: linear-gradient(90deg, #ff4d4d, #ffd24d, #61ff4d, #4dfff3, #4d7cff, #cf4dff, #ff4d9d, #ff4d4d);
+		background: linear-gradient(
+			90deg,
+			oklch(0.72 0.22 20),
+			oklch(0.72 0.22 60),
+			oklch(0.72 0.22 120),
+			oklch(0.72 0.22 180),
+			oklch(0.72 0.22 240),
+			oklch(0.72 0.22 300),
+			oklch(0.72 0.22 360)
+		);
 	}
 
-	.rainbow-range::-webkit-slider-runnable-track {
-		background: linear-gradient(90deg, #ff3b30, #ff9500, #ffcc00, #34c759, #00c7be, #007aff, #5856d6, #af52de, #ff2d55);
+	.hue-range::-moz-range-track {
+		background: linear-gradient(
+			90deg,
+			oklch(0.72 0.22 20),
+			oklch(0.72 0.22 60),
+			oklch(0.72 0.22 120),
+			oklch(0.72 0.22 180),
+			oklch(0.72 0.22 240),
+			oklch(0.72 0.22 300),
+			oklch(0.72 0.22 360)
+		);
 	}
 
 	.color-preview {

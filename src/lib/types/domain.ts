@@ -13,6 +13,8 @@ export interface UserProfile {
 	encryptionReady: boolean;
 	encryptionNoticeAccepted?: boolean;
 	createdAt?: string;
+	avatarSeed?: string | null;
+	avatarUrl?: string | null;
 }
 
 export interface TeamRecord {

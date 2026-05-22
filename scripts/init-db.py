@@ -69,6 +69,8 @@ def ensure_users(cursor):
             system_role TEXT NOT NULL DEFAULT '用户',
             encryption_key_hint TEXT NULL,
             encryption_notice_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+            avatar_seed TEXT NULL,
+            avatar_url TEXT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
@@ -80,6 +82,8 @@ def ensure_users(cursor):
     cursor.execute("ALTER TABLE amnesia_users ADD COLUMN IF NOT EXISTS system_role TEXT NOT NULL DEFAULT '用户';")
     cursor.execute("ALTER TABLE amnesia_users ADD COLUMN IF NOT EXISTS encryption_key_hint TEXT NULL;")
     cursor.execute("ALTER TABLE amnesia_users ADD COLUMN IF NOT EXISTS encryption_notice_accepted BOOLEAN NOT NULL DEFAULT FALSE;")
+    cursor.execute("ALTER TABLE amnesia_users ADD COLUMN IF NOT EXISTS avatar_seed TEXT NULL;")
+    cursor.execute("ALTER TABLE amnesia_users ADD COLUMN IF NOT EXISTS avatar_url TEXT NULL;")
     cursor.execute("ALTER TABLE amnesia_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cursor.execute("ALTER TABLE amnesia_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();")
     cursor.execute(
@@ -90,6 +94,7 @@ def ensure_users(cursor):
             WHEN system_role IS NULL OR system_role = '' THEN '用户'
             ELSE system_role
         END,
+            avatar_seed = COALESCE(NULLIF(avatar_seed, ''), username),
             created_at = COALESCE(created_at, NOW()),
             updated_at = COALESCE(updated_at, NOW());
         """
