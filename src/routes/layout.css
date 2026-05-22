@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Noto+Serif+SC:wght@200..900&family=Outfit:wght@100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Noto+Sans+SC:wght@100..900&family=Noto+Serif+SC:wght@200..900&family=Outfit:wght@100..900&display=swap');
 @import 'tailwindcss';
 @plugin "@tailwindcss/typography";
 @plugin 'daisyui' {
@@ -8,8 +8,16 @@
 		cupcake;
 }
 
+@font-face {
+	font-family: 'Maple Mono';
+	src: url('/MapleMonoNormal-Regular.ttf.woff2') format('woff2');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
 body {
-	font-family: 'Outfit', 'Noto Serif SC', sans-serif;
+	font-family: var(--app-ui-font, 'Outfit'), 'Noto Sans SC', 'Noto Serif SC', sans-serif;
 	margin: 0;
 	padding: 0;
 	overflow-x: hidden;
@@ -30,6 +38,14 @@ body {
 
 .jetbrains-mono {
   font-family: "JetBrains Mono", monospace;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+}
+
+
+.noto-sans-sc-500 {
+  font-family: "Noto Sans SC", sans-serif;
   font-optical-sizing: auto;
   font-weight: 500;
   font-style: normal;
@@ -70,13 +86,11 @@ body {
 	}
 }
 
-/* 自定义选区颜色 */
 ::selection {
 	background: rgba(0, 0, 0, 0.9);
 	color: #ffffff;
 }
 
-/* 隐藏自带的滚动条，创造极简视觉 */
 ::-webkit-scrollbar {
 	width: 6px;
 	height: 6px;

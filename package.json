@@ -25,11 +25,21 @@
 		"vite": "^8.0.7"
 	},
 	"dependencies": {
+		"@codemirror/lang-markdown": "^6.5.0",
+		"@codemirror/state": "^6.6.0",
+		"@codemirror/view": "^6.43.0",
 		"@supabase/supabase-js": "^2.106.1",
 		"@tiptap/core": "^3.23.6",
+		"@tiptap/extension-color": "^3.23.6",
+		"@tiptap/extension-highlight": "^3.23.6",
+		"@tiptap/extension-image": "^3.23.6",
+		"@tiptap/extension-link": "^3.23.6",
+		"@tiptap/extension-text-style": "^3.23.6",
 		"@tiptap/starter-kit": "^3.23.6",
 		"animejs": "^4.4.1",
+		"codemirror": "^6.0.2",
 		"daisyui": "5.0.0-beta.8",
+		"dompurify": "^3.4.5",
 		"marked": "^18.0.4",
 		"turndown": "^7.2.4"
 	}
