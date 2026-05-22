@@ -14,6 +14,7 @@
 		options = [],
 		placeholder = '请选择',
 		disabled = false,
+		positioning = 'fixed',
 		className = '',
 		panelClassName = '',
 		onChange = (_value: string) => {}
@@ -22,6 +23,7 @@
 		options?: ThemedSelectOption[];
 		placeholder?: string;
 		disabled?: boolean;
+		positioning?: 'fixed' | 'absolute';
 		className?: string;
 		panelClassName?: string;
 		onChange?: (value: string) => void;
@@ -38,6 +40,10 @@
 
 	function syncPanelPosition() {
 		if (!triggerNode) return;
+		if (positioning === 'absolute') {
+			panelStyle = `left:0; top:calc(100% + 8px); width:100%;`;
+			return;
+		}
 		const rect = triggerNode.getBoundingClientRect();
 		const width = Math.max(rect.width, 220);
 		const left = Math.min(
@@ -52,17 +58,15 @@
 		if (!panelNode) return;
 		animate(panelNode, {
 			opacity: [0, 1],
-			translateY: [-8, 0],
-			scale: [0.98, 1],
-			duration: 220,
-			ease: 'outExpo'
+			duration: 160,
+			ease: 'outQuad'
 		});
 
 		const items = Array.from(panelNode.querySelectorAll('.themed-select-option'));
 		if (items.length > 0) {
 			animate(items, {
 				opacity: [0, 1],
-				translateY: [-4, 0],
+				translateY: [-3, 0],
 				delay: (_el: Element, index: number) => 20 + index * 18,
 				duration: 180,
 				ease: 'outExpo'
@@ -99,9 +103,13 @@
 		closeMenu();
 		if (triggerNode) {
 			animate(triggerNode, {
-				scale: [1, 1.02, 1],
-				duration: 240,
-				ease: 'outExpo'
+				boxShadow: [
+					'0 0 0 0 color-mix(in oklab, var(--dashboard-accent) 0%, transparent)',
+					'0 0 0 3px color-mix(in oklab, var(--dashboard-accent) 14%, transparent)',
+					'0 0 0 0 color-mix(in oklab, var(--dashboard-accent) 0%, transparent)'
+				],
+				duration: 260,
+				ease: 'outQuad'
 			});
 		}
 	}
@@ -178,6 +186,7 @@
 	{#if open}
 		<div
 			bind:this={panelNode}
+			class:absolute-panel={positioning === 'absolute'}
 			class={`themed-select-panel ${panelClassName}`}
 			style={panelStyle}
 			role="listbox"
@@ -296,6 +305,12 @@
 			0 24px 60px color-mix(in oklab, var(--dashboard-shadow-color) 90%, transparent),
 			inset 0 1px 0 color-mix(in oklab, white 18%, transparent);
 		backdrop-filter: blur(20px) saturate(1.15);
+	}
+
+	.themed-select-panel.absolute-panel {
+		position: absolute;
+		inset: auto auto auto 0;
+		max-height: 18rem;
 	}
 
 	.themed-select-option {

@@ -51,7 +51,7 @@
 		<form onsubmit={handleRegister} class="space-y-4">
 			<input bind:value={username} class="w-full bg-neutral-50 border border-black/10 text-sm rounded-xl px-4 py-3 outline-none focus:border-black focus:bg-white transition-all" placeholder="用户名" />
 			<input bind:value={password} type="password" class="w-full bg-neutral-50 border border-black/10 text-sm rounded-xl px-4 py-3 outline-none focus:border-black focus:bg-white transition-all" placeholder="密码" />
-			<input bind:value={inviteCode} class="w-full bg-neutral-50 border border-black/10 text-sm rounded-xl px-4 py-3 outline-none focus:border-black focus:bg-white transition-all" placeholder="邀请码 sout114514" />
+			<input bind:value={inviteCode} class="w-full bg-neutral-50 border border-black/10 text-sm rounded-xl px-4 py-3 outline-none focus:border-black focus:bg-white transition-all" placeholder="邀请码" />
 			<button type="submit" disabled={loading} class="w-full btn btn-neutral rounded-xl font-bold py-3 mt-2 shadow-md cursor-pointer disabled:opacity-50">
 				{#if loading}注册中...{:else}注册{/if}
 			</button>

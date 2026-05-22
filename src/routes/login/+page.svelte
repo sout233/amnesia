@@ -113,7 +113,7 @@
 
 		<form onsubmit={handlePasswordAuth} class="space-y-4">
 			<div class="space-y-1">
-				<label for="username" class="text-xs font-bold text-black/50 tracking-wider">用户名 / USERNAME</label>
+				<label for="username" class="text-xs font-bold text-black/50 tracking-wider">用户名</label>
 				<input
 					id="username"
 					type="text"
@@ -127,7 +127,7 @@
 
 			<div class="space-y-1">
 				<div class="flex justify-between items-center">
-					<label for="password" class="text-xs font-bold text-black/50 tracking-wider">密码 / SECURITY CODE</label>
+					<label for="password" class="text-xs font-bold text-black/50 tracking-wider">密码</label>
 				</div>
 				<input
 					id="password"
@@ -155,7 +155,7 @@
 			</button>
 
 			<a href="/register" class="block text-center text-xs text-black/55 font-semibold pt-2">
-				没有账号？前往注册
+			点这里火速给我搞个账号
 			</a>
 		</form>
 	</div>

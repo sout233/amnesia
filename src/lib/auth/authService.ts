@@ -143,11 +143,56 @@ export async function updateUserAvatar(input: {
 	if (input.avatarSeed !== undefined) patch.avatar_seed = input.avatarSeed;
 	if (input.avatarUrl !== undefined) patch.avatar_url = input.avatarUrl;
 
+	let updateError: { message?: string; code?: string } | null = null;
+
+	if (Object.keys(patch).length > 0) {
+		const primary = await supabase
+			.from('amnesia_users')
+			.update(patch)
+			.eq('id', input.userId)
+			.select('id, username, system_role, encryption_key_hint, encryption_notice_accepted, created_at, avatar_seed, avatar_url')
+			.single();
+
+		if (!primary.error) {
+			return mapUser(primary.data as RawUserRow);
+		}
+
+		updateError = primary.error;
+
+		// 兼容数据库 schema cache 尚未包含 avatar_seed 的情况：
+		// 先只更新 avatar_url，至少保证自定义头像可以正常工作。
+		if (
+			(updateError.code === 'PGRST204' || updateError.code === 'PGRST205') &&
+			typeof updateError.message === 'string' &&
+			updateError.message.includes('avatar_seed') &&
+			input.avatarUrl !== undefined
+		) {
+			const fallback = await supabase
+				.from('amnesia_users')
+				.update({
+					avatar_url: input.avatarUrl
+				})
+				.eq('id', input.userId)
+				.select('id, username, system_role, encryption_key_hint, encryption_notice_accepted, created_at, avatar_url')
+				.single();
+
+			if (!fallback.error) {
+				return mapUser({
+					...(fallback.data as RawUserRow),
+					avatar_seed: input.avatarSeed ?? null
+				});
+			}
+
+			updateError = fallback.error;
+		}
+	}
+
+	if (updateError) throw updateError;
+
 	const { data, error } = await supabase
 		.from('amnesia_users')
-		.update(patch)
-		.eq('id', input.userId)
 		.select('id, username, system_role, encryption_key_hint, encryption_notice_accepted, created_at, avatar_seed, avatar_url')
+		.eq('id', input.userId)
 		.single();
 
 	if (error) throw error;

@@ -51,6 +51,8 @@
 
 	let sidebarNode = $state<HTMLElement | null>(null);
 	let mainContentNode = $state<HTMLElement | null>(null);
+	let dashboardShellNode = $state<HTMLElement | null>(null);
+	let dashboardMotionCleanup: (() => void) | null = null;
 
 	// 当前选中的文档索引
 	let activeDocIndex = $state(0);
@@ -84,6 +86,7 @@
 	let showPropertiesModal = $state(false);
 	let showEmojiPickerModal = $state(false);
 	let showUserProfileModal = $state(false);
+	let showQuickSearchModal = $state(false);
 	let lockPage = $state(false);
 	let theme = $state('cupcake');
 	let pagePaddingX = $state(48);
@@ -135,6 +138,10 @@
 	let newTeamSlug = $state('');
 	let savedEditorSelection = $state<{ from: number; to: number } | null>(null);
 	let avatarUploading = $state(false);
+	let quickSearchInput = $state('');
+	let quickSearchInputNode = $state<HTMLInputElement | null>(null);
+	let showSyncStatusPopover = $state(false);
+	let lastSavedAt = $state<string | null>(null);
 
 	type EncryptedDocPayload = {
 		type: 'amnesia-encrypted-doc';
@@ -230,6 +237,7 @@
 	function openUserProfileModal() {
 		showUserProfileModal = true;
 		requestAnimationFrame(() => {
+			animateModalEnter('.dashboard-user-profile-modal:not([data-modal-entered="1"])');
 			const panel = document.querySelector('.dashboard-user-profile-modal');
 			if (panel instanceof HTMLElement) {
 				animate(panel, {
@@ -237,10 +245,362 @@
 					translateY: [18, 0],
 					scale: [0.97, 1],
 					duration: 260,
-					ease: 'outExpo'
+					ease: 'outExpo',
+					onComplete: () => {
+						panel.style.removeProperty('transform');
+						panel.style.opacity = '1';
+					}
 				});
 			}
 		});
+	}
+
+	function openQuickSearchModal() {
+		showQuickSearchModal = true;
+		requestAnimationFrame(() => {
+			animateModalEnter('.dashboard-quick-search-modal:not([data-modal-entered="1"])');
+			quickSearchInputNode?.focus();
+			quickSearchInputNode?.select();
+		});
+	}
+
+	function closeQuickSearchModal() {
+		showQuickSearchModal = false;
+		quickSearchInput = '';
+	}
+
+	function animateCurrentDocView() {
+		if (titleNode) {
+			animate(titleNode, {
+				opacity: [0.72, 1],
+				translateY: [10, 0],
+				duration: 320,
+				ease: 'outExpo',
+				onComplete: () => {
+					titleNode?.style.removeProperty('transform');
+					if (titleNode) titleNode.style.opacity = '1';
+				}
+			});
+		}
+
+		if (editorShellNode) {
+			animate(editorShellNode, {
+				opacity: [0.8, 1],
+				translateY: [12, 0],
+				duration: 360,
+				delay: 40,
+				ease: 'outExpo',
+				onComplete: () => {
+					editorShellNode?.style.removeProperty('transform');
+					if (editorShellNode) editorShellNode.style.opacity = '1';
+				}
+			});
+		}
+	}
+
+	function animateModalEnter(
+		boxSelector = '.dashboard-modal-box:not([data-modal-entered="1"])',
+		backdropSelector = '.dashboard-modal-backdrop:not([data-backdrop-entered="1"])'
+	) {
+		const backdrops = Array.from(document.querySelectorAll(backdropSelector));
+		for (const backdrop of backdrops) {
+			if (!(backdrop instanceof HTMLElement)) continue;
+			backdrop.dataset.backdropEntered = '1';
+			animate(backdrop, {
+				opacity: [0, 1],
+				duration: 170,
+				ease: 'outQuad'
+			});
+		}
+
+		const boxes = Array.from(document.querySelectorAll(boxSelector));
+		for (const box of boxes) {
+			if (!(box instanceof HTMLElement)) continue;
+			box.dataset.modalEntered = '1';
+			animate(box, {
+				opacity: [0, 1],
+				translateY: [18, 0],
+				scale: [0.975, 1],
+				duration: 240,
+				ease: 'outExpo',
+				onComplete: () => {
+					box.style.removeProperty('transform');
+					box.style.opacity = '1';
+				}
+			});
+		}
+	}
+
+	function animateSectionToggle(section: 'global' | 'team' | 'private', open: boolean) {
+		const selector =
+			section === 'global'
+				? '.dashboard-global-panel'
+				: section === 'team'
+					? '.dashboard-team-panel'
+					: '.dashboard-private-panel';
+		const panel = dashboardShellNode?.querySelector(selector);
+		if (!(panel instanceof HTMLElement)) return;
+
+		animate(panel, {
+			opacity: open ? [0, 1] : [1, 0.7],
+			translateY: open ? [-8, 0] : [0, -4],
+			duration: 220,
+			ease: 'outExpo',
+			onComplete: () => {
+				panel.style.removeProperty('transform');
+				panel.style.opacity = '1';
+			}
+		});
+	}
+
+	function wireDashboardMotion(root: HTMLElement) {
+		const interactiveSelector = [
+			'.dashboard-btn',
+			'.dashboard-icon-btn',
+			'.dashboard-list-row',
+			'.dashboard-doc-row',
+			'.dashboard-folder-add-btn',
+			'.dashboard-mode-toggle',
+			'.dashboard-overlay-btn',
+			'.dashboard-emoji-trigger',
+			'.page-settings-fab',
+			'.handle-button',
+			'.themed-select-option'
+		].join(', ');
+
+		const shouldIgnoreTransition = (element: HTMLElement) =>
+			element.classList.contains('dashboard-doc-row') ||
+			element.classList.contains('dashboard-list-row') ||
+			element.classList.contains('themed-select-option');
+
+		const isTransformSensitive = (element: HTMLElement) =>
+			element.matches(
+				'.dashboard-select-trigger, .editor-toolbar-overlay, .toolbar-color-popover, .block-handle, .command-menu, .doc-menu, .themed-select-panel'
+			);
+
+		const animateHoverIn = (element: HTMLElement) => {
+			if (isTransformSensitive(element)) return;
+			const scale = element.classList.contains('page-settings-fab') ? 1.035 : 1.018;
+			const rise = element.classList.contains('dashboard-doc-row') ? -1.5 : -2;
+			animate(element, {
+				scale,
+				translateY: rise,
+				duration: 180,
+				ease: 'outQuad'
+			});
+		};
+
+		const animateHoverOut = (element: HTMLElement) => {
+			if (isTransformSensitive(element)) return;
+			animate(element, {
+				scale: 1,
+				translateY: 0,
+				duration: 180,
+				ease: 'outQuad'
+			});
+		};
+
+		const animatePress = (element: HTMLElement) => {
+			if (isTransformSensitive(element)) return;
+			animate(element, {
+				scale: 0.985,
+				duration: 120,
+				ease: 'outQuad'
+			});
+		};
+
+		const animateRelease = (element: HTMLElement) => {
+			if (isTransformSensitive(element)) return;
+			animate(element, {
+				scale: element.matches(':hover') ? 1.018 : 1,
+				translateY: element.matches(':hover') ? -1.5 : 0,
+				duration: 160,
+				ease: 'outQuad'
+			});
+		};
+
+		const animateInsertedNode = (node: HTMLElement) => {
+			if (node.dataset.motionAnimated === '1') return;
+
+			if (node.matches('.dashboard-modal-backdrop')) {
+				node.dataset.motionAnimated = '1';
+				animate(node, {
+					opacity: [0, 1],
+					duration: 180,
+					ease: 'outQuad'
+				});
+				return;
+			}
+
+			if (node.matches('.dashboard-modal-box')) {
+				node.dataset.motionAnimated = '1';
+				animate(node, {
+					opacity: [0, 1],
+					translateY: [18, 0],
+					scale: [0.975, 1],
+					duration: 260,
+					ease: 'outExpo'
+				});
+				return;
+			}
+
+			if (node.matches('.doc-menu, .command-menu')) {
+				node.dataset.motionAnimated = '1';
+				animate(node, {
+					opacity: [0, 1],
+					duration: 140,
+					ease: 'outQuad'
+				});
+				return;
+			}
+
+			if (node.matches('.dashboard-collapsible-panel')) {
+				node.dataset.motionAnimated = '1';
+				animate(node, {
+					opacity: [0, 1],
+					translateY: [-8, 0],
+					duration: 220,
+					ease: 'outExpo',
+					onComplete: () => {
+						node.style.removeProperty('transform');
+						node.style.opacity = '1';
+					}
+				});
+				return;
+			}
+
+			if (
+				node.matches(
+					'.dashboard-doc-row, .dashboard-list-row'
+				)
+			) {
+				node.dataset.motionAnimated = '1';
+				animate(node, {
+					opacity: [0, 1],
+					translateY: [10, 0],
+					duration: 240,
+					ease: 'outExpo',
+					onComplete: () => {
+						node.style.removeProperty('transform');
+						node.style.opacity = '1';
+					}
+				});
+			}
+		};
+
+		const animateTree = (startNode: ParentNode) => {
+			const candidates = Array.from(
+				startNode.querySelectorAll?.(
+					'.dashboard-modal-backdrop, .dashboard-modal-box, .doc-menu, .command-menu, .dashboard-collapsible-panel, .dashboard-doc-row, .dashboard-list-row'
+				) ?? []
+			);
+
+			if (startNode instanceof HTMLElement) {
+				candidates.unshift(startNode);
+			}
+
+			for (const candidate of candidates) {
+				if (candidate instanceof HTMLElement) {
+					animateInsertedNode(candidate);
+				}
+			}
+		};
+
+		const handlePointerOver = (event: Event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			const interactive = target.closest(interactiveSelector);
+			if (!(interactive instanceof HTMLElement)) return;
+			const related = event instanceof PointerEvent ? event.relatedTarget : null;
+			if (related instanceof Node && interactive.contains(related)) return;
+			animateHoverIn(interactive);
+		};
+
+		const handlePointerOut = (event: Event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			const interactive = target.closest(interactiveSelector);
+			if (!(interactive instanceof HTMLElement)) return;
+			const related = event instanceof PointerEvent ? event.relatedTarget : null;
+			if (related instanceof Node && interactive.contains(related)) return;
+			animateHoverOut(interactive);
+		};
+
+		const handlePointerDown = (event: Event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			const interactive = target.closest(interactiveSelector);
+			if (!(interactive instanceof HTMLElement)) return;
+			animatePress(interactive);
+		};
+
+		const handlePointerUp = (event: Event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			const interactive = target.closest(interactiveSelector);
+			if (!(interactive instanceof HTMLElement)) return;
+			animateRelease(interactive);
+		};
+
+		const handleFocusIn = (event: Event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			const interactive = target.closest(interactiveSelector);
+			if (!(interactive instanceof HTMLElement)) return;
+			if (shouldIgnoreTransition(interactive)) return;
+			if (isTransformSensitive(interactive)) return;
+			animate(interactive, {
+				scale: 1.012,
+				translateY: -1,
+				duration: 160,
+				ease: 'outQuad'
+			});
+		};
+
+		const handleFocusOut = (event: Event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			const interactive = target.closest(interactiveSelector);
+			if (!(interactive instanceof HTMLElement)) return;
+			if (shouldIgnoreTransition(interactive)) return;
+			if (isTransformSensitive(interactive)) return;
+			animate(interactive, {
+				scale: 1,
+				translateY: 0,
+				duration: 160,
+				ease: 'outQuad'
+			});
+		};
+
+		const observer = new MutationObserver((records) => {
+			for (const record of records) {
+				for (const node of Array.from(record.addedNodes)) {
+					if (node instanceof HTMLElement) {
+						animateTree(node);
+					}
+				}
+			}
+		});
+
+		root.addEventListener('pointerover', handlePointerOver);
+		root.addEventListener('pointerout', handlePointerOut);
+		root.addEventListener('pointerdown', handlePointerDown);
+		root.addEventListener('pointerup', handlePointerUp);
+		root.addEventListener('focusin', handleFocusIn);
+		root.addEventListener('focusout', handleFocusOut);
+
+		observer.observe(root, { childList: true, subtree: true });
+		animateTree(root);
+
+		return () => {
+			root.removeEventListener('pointerover', handlePointerOver);
+			root.removeEventListener('pointerout', handlePointerOut);
+			root.removeEventListener('pointerdown', handlePointerDown);
+			root.removeEventListener('pointerup', handlePointerUp);
+			root.removeEventListener('focusin', handleFocusIn);
+			root.removeEventListener('focusout', handleFocusOut);
+			observer.disconnect();
+		};
 	}
 
 	function syncUserProfile(
@@ -298,6 +658,59 @@
 		toast.success('已恢复默认头像');
 	}
 
+	async function compressAvatarImage(file: File) {
+		const imageUrl = URL.createObjectURL(file);
+		try {
+			const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+				const img = new window.Image();
+				img.onload = () => resolve(img);
+				img.onerror = () => reject(new Error('头像读取失败'));
+				img.src = imageUrl;
+			});
+
+			const maxSide = 512;
+			const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+			const targetWidth = Math.max(1, Math.round(image.width * scale));
+			const targetHeight = Math.max(1, Math.round(image.height * scale));
+
+			const canvas = document.createElement('canvas');
+			canvas.width = targetWidth;
+			canvas.height = targetHeight;
+			const context = canvas.getContext('2d');
+			if (!context) {
+				throw new Error('头像压缩失败');
+			}
+
+			context.clearRect(0, 0, targetWidth, targetHeight);
+			context.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+			const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+			const quality = outputType === 'image/png' ? undefined : 0.82;
+
+			return await new Promise<string>((resolve, reject) => {
+				canvas.toBlob(
+					(blob) => {
+						if (!blob) {
+							reject(new Error('头像压缩失败'));
+							return;
+						}
+						const reader = new FileReader();
+						reader.onload = () => {
+							if (typeof reader.result === 'string') resolve(reader.result);
+							else reject(new Error('头像压缩失败'));
+						};
+						reader.onerror = () => reject(new Error('头像压缩失败'));
+						reader.readAsDataURL(blob);
+					},
+					outputType,
+					quality
+				);
+			});
+		} finally {
+			URL.revokeObjectURL(imageUrl);
+		}
+	}
+
 	async function uploadCustomAvatar(file: File) {
 		const session = userState.session;
 		if (!session?.user?.id) return;
@@ -307,15 +720,7 @@
 		}
 		avatarUploading = true;
 		try {
-			const dataUrl = await new Promise<string>((resolve, reject) => {
-				const reader = new FileReader();
-				reader.onload = () => {
-					if (typeof reader.result === 'string') resolve(reader.result);
-					else reject(new Error('头像读取失败'));
-				};
-				reader.onerror = () => reject(new Error('头像读取失败'));
-				reader.readAsDataURL(file);
-			});
+			const dataUrl = await compressAvatarImage(file);
 
 			const updated = await updateUserAvatar({
 				userId: session.user.id,
@@ -328,7 +733,12 @@
 			});
 			toast.success('自定义头像已上传');
 		} catch (error: any) {
-			toast.error(error?.message ?? '头像上传失败');
+			const message = String(error?.message ?? '');
+			if (message.includes('avatar_seed') || message.includes('avatar_url')) {
+				toast.error('头像字段尚未完成数据库迁移，请先运行 scripts/init-db.py 后重试');
+			} else {
+				toast.error(error?.message ?? '头像上传失败');
+			}
 		} finally {
 			avatarUploading = false;
 		}
@@ -509,6 +919,59 @@
 		if (doc.space_type === 'team') return '团队';
 		return '私有';
 	}
+
+	function stripHtmlToText(html: string) {
+		if (typeof document === 'undefined') return html;
+		const temp = document.createElement('div');
+		temp.innerHTML = html;
+		return (temp.textContent || temp.innerText || '').replace(/\s+/g, ' ').trim();
+	}
+
+	function formatSavedAt(value?: string | null) {
+		if (!value) return '尚未保存';
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return '尚未保存';
+		return new Intl.DateTimeFormat('zh-CN', {
+			month: 'numeric',
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit'
+		}).format(date);
+	}
+
+	const quickSearchResults = $derived.by(() => {
+		const query = quickSearchInput.trim().toLowerCase();
+		const source = docs.map((doc, index) => {
+			const plainText = stripHtmlToText(doc.content || '');
+			const haystack = `${doc.title} ${doc.category} ${getSpaceLabel(doc)} ${plainText}`.toLowerCase();
+			const matched = !query || haystack.includes(query);
+			const titleMatch = query ? doc.title.toLowerCase().includes(query) : false;
+			const categoryMatch = query ? doc.category.toLowerCase().includes(query) : false;
+			const snippetSource = plainText || '暂无正文内容';
+			const queryIndex = query ? plainText.toLowerCase().indexOf(query) : -1;
+			const snippet =
+				queryIndex >= 0
+					? `${queryIndex > 18 ? '…' : ''}${snippetSource.slice(Math.max(0, queryIndex - 18), queryIndex + Math.max(query.length, 26)).trim()}`
+					: snippetSource.slice(0, 64).trim();
+
+			return {
+				doc,
+				index,
+				matched,
+				score:
+					(titleMatch ? 5 : 0) +
+					(categoryMatch ? 2 : 0) +
+					(queryIndex >= 0 ? 1 : 0) +
+					(doc.updated_at ? new Date(doc.updated_at).getTime() / 10 ** 13 : 0),
+				snippet: snippet || '暂无正文内容'
+			};
+		});
+
+		return source
+			.filter((item) => item.matched)
+			.sort((a, b) => b.score - a.score)
+			.slice(0, 12);
+	});
 
 	function getSpaceEmoji(spaceType: DocSpaceType | undefined) {
 		if (spaceType === 'global') return '🌍';
@@ -833,6 +1296,23 @@
 		}).format(date);
 	}
 
+	function handleDashboardKeydown(event: KeyboardEvent) {
+		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+			event.preventDefault();
+			if (showQuickSearchModal) {
+				closeQuickSearchModal();
+			} else {
+				openQuickSearchModal();
+			}
+			return;
+		}
+
+		if (event.key === 'Escape' && showQuickSearchModal) {
+			event.preventDefault();
+			closeQuickSearchModal();
+		}
+	}
+
 	const preserveTrailingBlankLinesKeymap = keymap.of([
 		{
 			key: 'Enter',
@@ -928,6 +1408,7 @@
 		renameInput = currentDoc.title;
 		closeDocMenu();
 		showRenameModal = true;
+		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	async function confirmRenameDoc() {
@@ -1069,11 +1550,44 @@
 		newDocCategoryInput = category || categoryOptions[0] || '个人笔记';
 		newDocFolderInput = '';
 		showCreateDocModal = true;
+		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function openCreateFolderModal() {
 		newFolderInput = '';
 		showCreateFolderModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openEmojiPickerModal() {
+		showEmojiPickerModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openGlobalSettingsModal() {
+		showGlobalSettingsModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openPageSettingsModal() {
+		showPageSettingsModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openTeamWorkspaceModal() {
+		showTeamWorkspaceModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openPropertiesModal() {
+								openPropertiesModal();
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openUserManagementModal() {
+		showUserManagement = true;
+		requestAnimationFrame(() => animateModalEnter());
+		refreshUsers();
 	}
 
 	function confirmCreateFolder() {
@@ -1116,6 +1630,7 @@
 		if (!currentDoc) return;
 		closeDocMenu();
 		showDeleteDocModal = true;
+		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	async function confirmDeleteActiveDoc() {
@@ -1152,16 +1667,19 @@
 		linkUrlInput = editor?.getAttributes('link')?.href ?? '';
 		linkTextInput = editor?.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ') ?? '';
 		showLinkModal = true;
+		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function insertImage() {
 		imageUrlInput = '';
 		showImageModal = true;
+		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function insertSafeHtml() {
 		htmlEmbedInput = '';
 		showHtmlModal = true;
+		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function confirmInsertLink() {
@@ -1435,7 +1953,7 @@ async function copyPageContent() {
 
 			try {
 				const serialized = await serializeDocContent(currentDoc);
-				await updateDoc({
+				const updatedDoc = await updateDoc({
 					id: currentDoc.id,
 					title: currentDoc.title,
 					content: serialized.content,
@@ -1445,6 +1963,11 @@ async function copyPageContent() {
 					isEncrypted: serialized.isEncrypted,
 					encryptionVersion: serialized.encryptionVersion
 				});
+				docs[activeDocIndex] = {
+					...docs[activeDocIndex],
+					updated_at: updatedDoc.updated_at ?? new Date().toISOString()
+				};
+				lastSavedAt = docs[activeDocIndex]?.updated_at ?? new Date().toISOString();
 			} catch (error) {
 				console.error('Failed to sync doc to Supabase:', error);
 				syncStatus = 'idle';
@@ -1642,6 +2165,7 @@ async function copyPageContent() {
 			}
 			pendingEditMode = 'markdown';
 			showMarkdownWarningModal = true;
+			requestAnimationFrame(() => animateModalEnter());
 			return;
 		}
 
@@ -1653,6 +2177,9 @@ async function copyPageContent() {
 			initHtmlEditor();
 			hideCommandMenu();
 			hideBlockHandle();
+			requestAnimationFrame(() => {
+				animateCurrentDocView();
+			});
 			return;
 		}
 
@@ -1665,6 +2192,10 @@ async function copyPageContent() {
 		editMode = 'rich';
 		hideCommandMenu();
 		hideBlockHandle();
+		await tick();
+		requestAnimationFrame(() => {
+			animateCurrentDocView();
+		});
 	}
 
 	async function confirmMarkdownModeSwitch() {
@@ -1676,12 +2207,16 @@ async function copyPageContent() {
 		initMarkdownEditor();
 		hideCommandMenu();
 		hideBlockHandle();
+		requestAnimationFrame(() => {
+			animateCurrentDocView();
+		});
 	}
 
 	// 切换文档
 	function handleDocClick(index: number, docTitle: string) {
 		if (activeDocIndex === index) return;
 		activeDocIndex = index;
+		closeQuickSearchModal();
 		toast.info(`正在打开: ${docTitle}`);
 
 		const currentDoc = docs[index];
@@ -1697,6 +2232,9 @@ async function copyPageContent() {
 			}
 			syncMarkdownFromHtml(currentDoc.content);
 			htmlContent = currentDoc.content;
+			requestAnimationFrame(() => {
+				animateCurrentDocView();
+			});
 		}
 	}
 
@@ -1715,12 +2253,14 @@ async function copyPageContent() {
 		userState.loadFromLocalStorage();
 		loadDashboardSettings();
 		applyTheme();
+		window.addEventListener('keydown', handleDashboardKeydown);
 		if (!userState.session) {
 			goto('/login');
 			return;
 		}
 		if (!userState.session.user.encryptionReady) {
 			showEncryptionSetupModal = true;
+			requestAnimationFrame(() => animateModalEnter());
 		}
 
 		// 1. 从 Supabase 拉取真正的文档
@@ -1733,6 +2273,7 @@ async function copyPageContent() {
 		try {
 			await loadTeamsForCurrentUser();
 			await refreshDocs();
+			lastSavedAt = docs[activeDocIndex]?.updated_at ?? null;
 			await tick();
 		} catch (error) {
 			toast.error('拉取云端文档失败，请检查网络');
@@ -1793,7 +2334,10 @@ async function copyPageContent() {
 			animate(sidebarNode, {
 				translateX: [-260, 0],
 				duration: 800,
-				ease: 'outExpo'
+				ease: 'outExpo',
+				onComplete: () => {
+					sidebarNode?.style.removeProperty('transform');
+				}
 			});
 		}
 
@@ -1803,8 +2347,16 @@ async function copyPageContent() {
 				translateY: [20, 0],
 				duration: 1000,
 				delay: 200,
-				ease: 'outExpo'
+				ease: 'outExpo',
+				onComplete: () => {
+					mainContentNode?.style.removeProperty('transform');
+					if (mainContentNode) mainContentNode.style.opacity = '1';
+				}
 			});
+		}
+
+		if (dashboardShellNode) {
+			dashboardMotionCleanup = wireDashboardMotion(dashboardShellNode);
 		}
 
 		toast.success('工作台已加载完毕');
@@ -1812,6 +2364,9 @@ async function copyPageContent() {
 	});
 
 	onDestroy(() => {
+		window.removeEventListener('keydown', handleDashboardKeydown);
+		dashboardMotionCleanup?.();
+		dashboardMotionCleanup = null;
 		if (editor) {
 			editor.destroy();
 		}
@@ -1827,7 +2382,7 @@ async function copyPageContent() {
 	<title>工作台 - Amnesia</title>
 </svelte:head>
 
-<div class="dashboard-shell flex h-[100dvh] max-h-[100dvh] w-full overflow-hidden text-sm">
+<div bind:this={dashboardShellNode} class="dashboard-shell flex h-[100dvh] max-h-[100dvh] w-full overflow-hidden text-sm">
 
 	<!-- =================== 左侧 Notion 侧边栏 =================== -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1864,7 +2419,7 @@ async function copyPageContent() {
 			<div class="space-y-0.5">
 				<button
 					type="button"
-					onclick={() => toast.info('🔍 检索服务正在筹备中...')}
+					onclick={openQuickSearchModal}
 					class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs font-medium cursor-pointer"
 				>
 					<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="opacity-60 ml-1"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0-14 0m18 11l-6-6"/></svg>
@@ -1874,7 +2429,7 @@ async function copyPageContent() {
 				{#if userState.session?.user?.role === 'root' || userState.session?.user?.role === '管理员'}
 					<button
 						type="button"
-						onclick={() => { showUserManagement = true; refreshUsers(); }}
+						onclick={openUserManagementModal}
 						class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs font-medium cursor-pointer"
 					>
 						<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="opacity-60 ml-1"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2m8-10a4 4 0 1 0 0-8a4 4 0 0 0 0 8m14 10v-2a4 4 0 0 0-3-3.87m-4-12a4 4 0 0 1 0 7.75"/></svg>
@@ -1889,7 +2444,10 @@ async function copyPageContent() {
 					<button
 						type="button"
 						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
-						onclick={() => { globalArticlesOpen = !globalArticlesOpen; }}
+						onclick={() => {
+							globalArticlesOpen = !globalArticlesOpen;
+							requestAnimationFrame(() => animateSectionToggle('global', globalArticlesOpen));
+						}}
 					>
 						<span>🌍 全局文章</span>
 						<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {globalArticlesOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
@@ -1898,7 +2456,7 @@ async function copyPageContent() {
 				</div>
 
 				{#if globalArticlesOpen}
-					<div class="space-y-0.5 pl-1">
+					<div class="dashboard-collapsible-panel dashboard-global-panel space-y-0.5 pl-1">
 						{#each docs.filter(d => d.space_type === 'global') as doc}
 							{@const index = docs.findIndex(d => d.id === doc.id)}
 							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
@@ -1911,7 +2469,12 @@ async function copyPageContent() {
 									<span class="truncate">{doc.title}</span>
 									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
 								</button>
-								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>⋯</button>
+								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>
+								<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+									<path d="M0 0h24v24H0z" fill="none" />
+									<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
+								</svg>
+								</button>
 							</div>
 						{/each}
 					</div>
@@ -1924,19 +2487,22 @@ async function copyPageContent() {
 					<button
 						type="button"
 						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
-						onclick={() => { teamWorkspaceOpen = !teamWorkspaceOpen; }}
+						onclick={() => {
+							teamWorkspaceOpen = !teamWorkspaceOpen;
+							requestAnimationFrame(() => animateSectionToggle('team', teamWorkspaceOpen));
+						}}
 					>
 						<span>👥 团队工作区</span>
 						<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {teamWorkspaceOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
 					</button>
 					<div class="flex items-center gap-1">
-						<button type="button" class="dashboard-folder-add-btn" title="管理团队空间" onclick={() => showTeamWorkspaceModal = true}>⚙</button>
+						<button type="button" class="dashboard-folder-add-btn" title="管理团队空间" onclick={openTeamWorkspaceModal}>⚙</button>
 						<button type="button" class="dashboard-folder-add-btn" title="在团队工作区添加文章" onclick={() => openCreateDocModal('团队工作区')}>+</button>
 					</div>
 				</div>
 
 				{#if teamWorkspaceOpen}
-					<div class="space-y-2 pl-1">
+					<div class="dashboard-collapsible-panel dashboard-team-panel space-y-2 pl-1">
 						{#if teams.length > 0}
 							<div class="dashboard-team-switcher px-2 py-2 rounded-xl dashboard-sidebar-card">
 								<div class="dashboard-section-label">当前团队</div>
@@ -1946,10 +2512,11 @@ async function copyPageContent() {
 										bind:value={currentTeamIdValue}
 										options={teamSelectOptions}
 										placeholder="选择当前团队"
+										positioning="absolute"
 										onChange={(value) => handleCurrentTeamChange(value)}
 									/>
 								</div>
-    								<button type="button" aria-label="查看团队信息" class="dashboard-btn dashboard-btn-subtle w-12 justify-center mt-2" onclick={() => showTeamWorkspaceModal = true}>
+    								<button type="button" aria-label="查看团队信息" class="dashboard-btn dashboard-btn-subtle w-12 justify-center mt-2" onclick={openTeamWorkspaceModal}>
     								    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
     												<path d="M0 0h24v24H0z" fill="none" />
     												<path fill="currentColor" d="M2 22a8 8 0 1 1 16 0zm8-9c-3.315 0-6-2.685-6-6s2.685-6 6-6s6 2.685 6 6s-2.685 6-6 6m7.363 2.233A7.505 7.505 0 0 1 22.983 22H20c0-2.61-1-4.986-2.637-6.767m-2.023-2.276A7.98 7.98 0 0 0 18 7a7.96 7.96 0 0 0-1.015-3.903A5 5 0 0 1 21 8a5 5 0 0 1-5.66 4.957" />
@@ -1972,7 +2539,12 @@ async function copyPageContent() {
 									<span class="truncate">{doc.title}</span>
 									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
 								</button>
-								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>⋯</button>
+								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>
+									<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+										<path d="M0 0h24v24H0z" fill="none" />
+										<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
+									</svg>
+								</button>
 							</div>
 						{/each}
 					</div>
@@ -1985,7 +2557,10 @@ async function copyPageContent() {
 					<button
 						type="button"
 						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
-						onclick={() => { personalNotesOpen = !personalNotesOpen; }}
+						onclick={() => {
+							personalNotesOpen = !personalNotesOpen;
+							requestAnimationFrame(() => animateSectionToggle('private', personalNotesOpen));
+						}}
 					>
 						<span>📝 个人笔记</span>
 						<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {personalNotesOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
@@ -1994,7 +2569,7 @@ async function copyPageContent() {
 				</div>
 
 				{#if personalNotesOpen}
-					<div class="space-y-0.5 pl-1">
+					<div class="dashboard-collapsible-panel dashboard-private-panel space-y-0.5 pl-1">
 						{#each docs.filter(d => d.category === '个人笔记') as doc}
 							{@const index = docs.findIndex(d => d.id === doc.id)}
 							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
@@ -2007,7 +2582,12 @@ async function copyPageContent() {
 									<span class="truncate">{doc.title}</span>
 									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
 								</button>
-								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>⋯</button>
+								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>
+    								<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+    									<path d="M0 0h24v24H0z" fill="none" />
+    									<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
+    								</svg>
+								</button>
 							</div>
 						{/each}
 					</div>
@@ -2029,7 +2609,7 @@ async function copyPageContent() {
 			<button
 				type="button"
 				class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 p-2 rounded-lg text-xs font-bold cursor-pointer transition-all duration-200"
-				onclick={() => showGlobalSettingsModal = true}
+				onclick={openGlobalSettingsModal}
 			>
 				<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15a3 3 0 1 0 0-6a3 3 0 0 0 0 6m7.94-2a8.99 8.99 0 0 0 .06-1a8.99 8.99 0 0 0-.06-1l2.12-1.65l-2-3.46l-2.49 1a9.2 9.2 0 0 0-1.73-1l-.38-2.65h-4l-.38 2.65a9.2 9.2 0 0 0-1.73 1l-2.49-1l-2 3.46L4.06 11a8.99 8.99 0 0 0-.06 1a8.99 8.99 0 0 0 .06 1l-2.12 1.65l2 3.46l2.49-1c.53.42 1.11.76 1.73 1l.38 2.65h4l.38-2.65c.62-.24 1.2-.58 1.73-1l2.49 1l2-3.46z"/></svg>
 				全局设置
@@ -2056,15 +2636,38 @@ async function copyPageContent() {
 				</span>
 			</div>
 			<div class="flex items-center gap-1.5 text-xs dashboard-muted font-medium font-sans shrink-0">
-				{#if syncStatus === 'syncing'}
-					<span>同步中...</span>
-				{:else if syncStatus === 'saved'}
-					<span class="status-dot is-saved"></span>
-					<span class="status-text is-saved">已同步</span>
-				{:else}
-					<span class="status-dot is-idle"></span>
-					<span>已离线，等待编辑...</span>
-				{/if}
+				<div
+					class="dashboard-sync-status"
+					onmouseenter={() => (showSyncStatusPopover = true)}
+					onmouseleave={() => (showSyncStatusPopover = false)}
+				>
+					<div class="dashboard-sync-trigger">
+						{#if syncStatus === 'syncing'}
+							<span class="status-dot is-syncing"></span>
+							<span>同步中...</span>
+						{:else if syncStatus === 'saved'}
+							<span class="status-dot is-saved"></span>
+							<span class="status-text is-saved">已同步</span>
+						{:else}
+							<span class="status-dot is-idle"></span>
+							<span>已离线</span>
+						{/if}
+					</div>
+					{#if showSyncStatusPopover}
+						<div class="dashboard-sync-popover">
+							<div class="dashboard-sync-popover-row">
+								<span class="dashboard-muted">连接状态</span>
+								<span class="dashboard-strong">
+									{syncStatus === 'syncing' ? '正在同步' : syncStatus === 'saved' ? '云端已连接' : '等待重试'}
+								</span>
+							</div>
+							<div class="dashboard-sync-popover-row">
+								<span class="dashboard-muted">上次保存</span>
+								<span class="dashboard-strong">{formatSavedAt(lastSavedAt ?? activeDoc?.updated_at)}</span>
+							</div>
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 
@@ -2074,7 +2677,9 @@ async function copyPageContent() {
 			<!-- 科幻淡雅的线性渐变 -->
 			<div class="absolute inset-0 bg-gradient-to-tr from-black/20 via-transparent to-white/10"></div>
 			<div class="absolute bottom-4 right-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-all duration-300">
-				<button type="button" class="dashboard-overlay-btn">更改封面</button>
+				<button type="button" class="dashboard-overlay-btn" onclick={() => toast.info('暂不支持')}>
+					更改封面
+				</button>
 			</div>
 		</div>
 
@@ -2095,7 +2700,7 @@ async function copyPageContent() {
 
 				<!-- 超大 Emoji -->
 				<div class="mb-6 flex items-center gap-4">
-					<button type="button" class="dashboard-surface dashboard-emoji-trigger" onclick={() => showEmojiPickerModal = true}>
+					<button type="button" class="dashboard-surface dashboard-emoji-trigger" onclick={openEmojiPickerModal}>
 						{activeDoc?.emoji || '📝'}
 					</button>
 				</div>
@@ -2398,7 +3003,7 @@ async function copyPageContent() {
 
 	</div>
 
-	<button type="button" class="page-settings-fab" onclick={() => showPageSettingsModal = true} title="页面设置">
+	<button type="button" class="page-settings-fab" onclick={openPageSettingsModal} title="页面设置">
 		<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1l1-4z"/></svg>
 	</button>
 
@@ -2458,6 +3063,57 @@ async function copyPageContent() {
 	</div>
 {/if}
 
+{#if showQuickSearchModal}
+	<div class="dashboard-modal-backdrop" onclick={closeQuickSearchModal}>
+		<div
+			class="dashboard-modal-box dashboard-modal-medium dashboard-quick-search-modal"
+			onclick={(e) => e.stopPropagation()}
+		>
+			<div class="dashboard-modal-header">
+				<div>
+					<h3 class="dashboard-modal-title">快速检索</h3>
+					<p class="dashboard-muted mt-1 text-xs">按标题、空间、分组或正文内容搜索，快捷键 `Ctrl/Cmd + K`。</p>
+				</div>
+				<button type="button" class="dashboard-icon-btn" onclick={closeQuickSearchModal}>✕</button>
+			</div>
+			<div class="dashboard-field mb-2">
+				<input
+					bind:this={quickSearchInputNode}
+					bind:value={quickSearchInput}
+					class="dashboard-input"
+					placeholder="输入关键词，比如：炉管、API、团队、原神……"
+				/>
+			</div>
+			<div class="dashboard-quick-search-results">
+				{#if quickSearchResults.length === 0}
+					<div class="dashboard-quick-search-empty">
+						<div class="dashboard-strong font-semibold">没有找到匹配内容</div>
+						<div class="dashboard-muted text-xs">换个关键词，或者先创建一篇新文章。</div>
+					</div>
+				{:else}
+					{#each quickSearchResults as result}
+						<button
+							type="button"
+							class="dashboard-quick-search-item"
+							onclick={() => handleDocClick(result.index, result.doc.title)}
+						>
+							<div class="dashboard-quick-search-main">
+								<div class="flex min-w-0 items-center gap-2">
+									<span class="shrink-0 text-base">{result.doc.emoji || '📝'}</span>
+									<span class="dashboard-strong truncate font-semibold">{result.doc.title}</span>
+									<span class="dashboard-space-pill shrink-0">{getSpaceLabel(result.doc)}</span>
+								</div>
+								<div class="dashboard-muted shrink-0 text-[11px]">/{result.doc.category || '未分类'}</div>
+							</div>
+							<div class="dashboard-muted line-clamp-2 text-left text-xs">{result.snippet}</div>
+						</button>
+					{/each}
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
+
 {#if showEmojiPickerModal}
 	<div class="dashboard-modal-backdrop">
 		<div class="dashboard-modal-box dashboard-modal-medium">
@@ -2496,7 +3152,7 @@ async function copyPageContent() {
 					</div>
 					<div class="min-w-0">
 						<div class="dashboard-strong text-base font-bold">{userState.session?.user?.username || '游客'}</div>
-						<div class="dashboard-helper-text mt-1">默认头像使用 DiceBear `9.x/glass` 风格，也支持上传你自己的头像。</div>
+						<div class="dashboard-helper-text mt-1">默认头像是随机生成的，你可以在下面自定义，但是吧别的我还没写）</div>
 					</div>
 				</div>
 				<div class="flex flex-wrap gap-2">
@@ -3370,6 +4026,51 @@ async function copyPageContent() {
 		font-weight: 700;
 	}
 
+	.dashboard-sync-status {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+	}
+
+	.dashboard-sync-trigger {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0.28rem 0.55rem;
+		border-radius: 999px;
+		background: color-mix(in oklab, var(--dashboard-panel) 68%, transparent);
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 7%, transparent);
+		backdrop-filter: blur(12px);
+	}
+
+	.dashboard-sync-popover {
+		position: absolute;
+		top: calc(100% + 0.55rem);
+		right: 0;
+		z-index: 35;
+		min-width: 14rem;
+		border-radius: calc(var(--dashboard-radius) * 0.65);
+		border: 1px solid var(--dashboard-border);
+		background: color-mix(in oklab, var(--dashboard-panel) 94%, transparent);
+		padding: 0.8rem 0.9rem;
+		box-shadow: 0 18px 42px var(--dashboard-shadow-color);
+		backdrop-filter: blur(18px);
+	}
+
+	.dashboard-sync-popover-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		font-size: 0.76rem;
+	}
+
+	.dashboard-sync-popover-row + .dashboard-sync-popover-row {
+		margin-top: 0.55rem;
+		padding-top: 0.55rem;
+		border-top: 1px solid var(--dashboard-border);
+	}
+
 	.dashboard-cover {
 		border-bottom: 1px solid var(--dashboard-border);
 		background:
@@ -3478,6 +4179,56 @@ async function copyPageContent() {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.55rem;
+	}
+
+	.dashboard-quick-search-modal {
+		padding-top: 1.1rem;
+	}
+
+	.dashboard-quick-search-results {
+		display: grid;
+		gap: 0.6rem;
+		max-height: min(60vh, 32rem);
+		overflow-y: auto;
+		padding-right: 0.15rem;
+	}
+
+	.dashboard-quick-search-item {
+		display: grid;
+		gap: 0.45rem;
+		width: 100%;
+		border: 1px solid var(--dashboard-border);
+		border-radius: calc(var(--dashboard-radius) * 0.55);
+		background: color-mix(in oklab, var(--dashboard-panel) 88%, transparent);
+		padding: 0.8rem 0.9rem;
+		text-align: left;
+		transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+		cursor: pointer;
+	}
+
+	.dashboard-quick-search-item:hover {
+		background: var(--dashboard-hover-bg);
+		border-color: color-mix(in oklab, var(--dashboard-accent) 22%, transparent);
+		transform: translateY(-1px);
+	}
+
+	.dashboard-quick-search-main {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.8rem;
+	}
+
+	.dashboard-quick-search-empty {
+		display: grid;
+		place-items: center;
+		gap: 0.35rem;
+		min-height: 10rem;
+		border: 1px dashed var(--dashboard-border);
+		border-radius: calc(var(--dashboard-radius) * 0.65);
+		background: color-mix(in oklab, var(--dashboard-panel) 72%, transparent);
+		padding: 1rem;
+		text-align: center;
 	}
 
 	.dashboard-modal-body {
