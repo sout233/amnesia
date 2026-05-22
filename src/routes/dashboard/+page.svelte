@@ -96,6 +96,7 @@
 	let globalSettingsSection = $state<'appearance' | 'editor' | 'shortcuts' | 'advanced'>('appearance');
 	let customEmojiInput = $state('');
 	let activeDocMenuId = $state<number | null>(null);
+	let propertiesDocId = $state<number | null>(null);
 	let selectedTextColor = $state('#111827');
 	let selectedHighlightColor = $state('#fef08a');
 	let activeTextColorState = $state('');
@@ -128,6 +129,9 @@
 	let newDocCategoryInput = $state('个人笔记');
 	let newFolderInput = $state('');
 	let newDocFolderInput = $state('');
+	let pendingFolderSpace = $state<SpaceCategory>('个人笔记');
+	let renameFolderInput = $state('');
+	let moveFolderTarget = $state('');
 	let encryptionPasswordInput = $state('');
 	let currentTeamId = $state<string | number | null>(null);
 	let currentTeamIdValue = $state('');
@@ -142,6 +146,16 @@
 	let quickSearchInputNode = $state<HTMLInputElement | null>(null);
 	let showSyncStatusPopover = $state(false);
 	let lastSavedAt = $state<string | null>(null);
+	let spaceContextMenuOpen = $state(false);
+	let spaceContextMenuNode = $state<HTMLElement | null>(null);
+	let spaceContextMenuPosition = $state({ top: 0, left: 0 });
+	let spaceContextMenuCategory = $state<SpaceCategory>('个人笔记');
+	let spaceContextMenuFolder = $state('');
+	let showRenameFolderModal = $state(false);
+	let showDeleteFolderModal = $state(false);
+	let showMoveFolderModal = $state(false);
+	let collapsedFolderKeys = $state<Record<string, boolean>>({});
+	let draggingDocId = $state<number | null>(null);
 
 	type EncryptedDocPayload = {
 		type: 'amnesia-encrypted-doc';
@@ -150,7 +164,11 @@
 		cipherText: string;
 	};
 
-	type ThemePreset = 'cupcake' | 'shadcn' | 'ibm' | 'macos';
+	type ThemePreset = 'cupcake' | 'shadcn' | 'ibm' | 'far in blue sky...';
+	type SpaceCategory = 'Amnesia 共享文章' | '团队工作区' | '个人笔记';
+	type SpaceContextAction = 'doc' | 'folder';
+	type SidebarDocRef = { doc: DocRecord; index: number };
+	type SidebarFolderEntry = { key: string; name: string; docs: SidebarDocRef[] };
 
 	type ThemeConfig = {
 		name: ThemePreset;
@@ -796,7 +814,7 @@
 			gradientTo: 'oklch(0.96 0.004 240)'
 		},
 		{
-			name: 'macos',
+			name: 'far in blue sky...',
 			radius: 24,
 			shadow: 22,
 			padding: 18,
@@ -839,12 +857,12 @@
 			label: option.name,
 			hint:
 				option.name === 'cupcake'
-					? '奶油橙色、柔和玻璃感'
+					? '从DaisyUI抄过来的'
 					: option.name === 'shadcn'
-						? '纯黑白、高对比极简'
+						? '从Vercel那里抄过来的'
 						: option.name === 'ibm'
-							? '商务直角、理性克制'
-							: '拟物渐变、通透模糊'
+							? '从IBM那里抄过来的'
+							: '打叠的积极大'
 		}))
 	);
 
@@ -903,10 +921,126 @@
 		};
 	});
 
+	const globalSidebarFolders = $derived.by(() => buildSidebarFoldersForSpace('Amnesia 共享文章'));
+	const teamSidebarFolders = $derived.by(() => buildSidebarFoldersForSpace('团队工作区'));
+	const privateSidebarFolders = $derived.by(() => buildSidebarFoldersForSpace('个人笔记'));
+	const propertiesDoc = $derived.by(() =>
+		propertiesDocId == null
+			? activeDoc
+			: docs.find((doc) => doc.id === propertiesDocId) ?? activeDoc
+	);
+
 	function getDocSpaceTypeByCategory(category: string): DocSpaceType {
 		if (category === 'Amnesia 共享文章') return 'global';
 		if (category === '团队工作区') return 'team';
 		return 'private';
+	}
+
+	function getFolderKey(spaceCategory: SpaceCategory, folderName: string) {
+		return `${spaceCategory}:${folderName}`;
+	}
+
+	function getSpaceTitleByType(spaceType: DocSpaceType | undefined): SpaceCategory {
+		if (spaceType === 'global') return 'Amnesia 共享文章';
+		if (spaceType === 'team') return '团队工作区';
+		return '个人笔记';
+	}
+
+	function isFolderPlaceholderDoc(doc: DocRecord) {
+		return doc.title.startsWith('__folder__:');
+	}
+
+	function getFolderNameFromPlaceholder(doc: DocRecord) {
+		return doc.title.replace(/^__folder__:/, '').trim();
+	}
+
+	function getDocListForSpace(spaceCategory: SpaceCategory) {
+		if (spaceCategory === 'Amnesia 共享文章') {
+			return docs
+				.map((doc, index) => ({ doc, index }))
+				.filter((item) => item.doc.space_type === 'global');
+		}
+		if (spaceCategory === '团队工作区') {
+			return docs
+				.map((doc, index) => ({ doc, index }))
+				.filter(
+					(item) =>
+						item.doc.space_type === 'team' && String(item.doc.team_id ?? '') === currentTeamIdValue
+				);
+		}
+		return docs
+			.map((doc, index) => ({ doc, index }))
+			.filter((item) => item.doc.space_type === 'private');
+	}
+
+	function buildSidebarFoldersForSpace(spaceCategory: SpaceCategory) {
+		const docRefs = getDocListForSpace(spaceCategory);
+		const rootDocs: SidebarDocRef[] = [];
+		const folderMap = new Map<string, SidebarFolderEntry>();
+
+		for (const docRef of docRefs) {
+			const { doc } = docRef;
+			if (isFolderPlaceholderDoc(doc)) {
+				const folderName = getFolderNameFromPlaceholder(doc) || doc.category;
+				if (!folderMap.has(folderName)) {
+					folderMap.set(folderName, {
+						key: getFolderKey(spaceCategory, folderName),
+						name: folderName,
+						docs: []
+					});
+				}
+				continue;
+			}
+
+			if (doc.category === spaceCategory) {
+				rootDocs.push(docRef);
+				continue;
+			}
+
+			const folderName = doc.category;
+			const existing = folderMap.get(folderName) ?? {
+				key: getFolderKey(spaceCategory, folderName),
+				name: folderName,
+				docs: []
+			};
+			existing.docs.push(docRef);
+			folderMap.set(folderName, existing);
+		}
+
+		return {
+			rootDocs,
+			folders: Array.from(folderMap.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+		};
+	}
+
+	function toggleFolderCollapsed(spaceCategory: SpaceCategory, folderName: string) {
+		const key = getFolderKey(spaceCategory, folderName);
+		collapsedFolderKeys = {
+			...collapsedFolderKeys,
+			[key]: !collapsedFolderKeys[key]
+		};
+	}
+
+	function isFolderCollapsed(spaceCategory: SpaceCategory, folderName: string) {
+		return !!collapsedFolderKeys[getFolderKey(spaceCategory, folderName)];
+	}
+
+	async function moveDocToFolder(docId: number, spaceCategory: SpaceCategory, folderName: string) {
+		const doc = docs.find((item) => item.id === docId);
+		if (!doc || isFolderPlaceholderDoc(doc)) return;
+		const nextCategory = folderName.trim() || spaceCategory;
+		if (doc.category === nextCategory) return;
+		try {
+			await updateDoc({
+				id: doc.id,
+				category: nextCategory
+			});
+			doc.category = nextCategory;
+			await refreshDocs(doc.id);
+			toast.success(folderName ? '文章已移动到新文件夹' : '文章已移动到根分组');
+		} catch {
+			toast.error('移动文章失败');
+		}
 	}
 
 	function getEffectiveCategory(spaceCategory: string, folderName: string) {
@@ -1453,7 +1587,175 @@
 		activeDocMenuId = null;
 	}
 
+	function closeSpaceContextMenu() {
+		spaceContextMenuOpen = false;
+		spaceContextMenuFolder = '';
+	}
+
+	function animateSpaceContextMenuIn() {
+		if (!spaceContextMenuNode) return;
+		animate(spaceContextMenuNode, {
+			opacity: [0, 1],
+			translateY: [-8, 0],
+			scale: [0.97, 1],
+			duration: 200,
+			ease: 'outExpo'
+		});
+	}
+
+	function openSpaceContextMenu(event: MouseEvent, category: SpaceCategory, folderName = '') {
+		event.preventDefault();
+		activeDocMenuId = null;
+		spaceContextMenuCategory = category;
+		spaceContextMenuFolder = folderName;
+		spaceContextMenuPosition = {
+			top: event.clientY + 4,
+			left: Math.max(14, event.clientX - 8)
+		};
+		spaceContextMenuOpen = true;
+		requestAnimationFrame(() => {
+			animateSpaceContextMenuIn();
+		});
+	}
+
+	function createDocInSpace(category: SpaceCategory) {
+		closeSpaceContextMenu();
+		openCreateDocModal(category);
+		if (spaceContextMenuFolder) {
+			newDocFolderInput = spaceContextMenuFolder;
+		}
+	}
+
+	async function createFolderInSpace(category: SpaceCategory) {
+		closeSpaceContextMenu();
+		newFolderInput = '';
+		pendingFolderSpace = category;
+		showCreateFolderModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openRenameFolderModal() {
+		renameFolderInput = spaceContextMenuFolder;
+		closeSpaceContextMenu();
+		showRenameFolderModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openDeleteFolderModal() {
+		closeSpaceContextMenu();
+		showDeleteFolderModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	function openMoveFolderModal() {
+		moveFolderTarget = '';
+		closeSpaceContextMenu();
+		showMoveFolderModal = true;
+		requestAnimationFrame(() => animateModalEnter());
+	}
+
+	async function confirmRenameFolder() {
+		const sourceFolder = spaceContextMenuFolder.trim();
+		const targetFolder = renameFolderInput.trim();
+		if (!sourceFolder || !targetFolder || sourceFolder === targetFolder) {
+			showRenameFolderModal = false;
+			return;
+		}
+		try {
+			const targetDocs = getDocListForSpace(spaceContextMenuCategory)
+				.map((item) => item.doc)
+				.filter((doc) => doc.category === sourceFolder);
+			for (const doc of targetDocs) {
+				await updateDoc({
+					id: doc.id,
+					category: targetFolder,
+					title: isFolderPlaceholderDoc(doc) ? `__folder__:${targetFolder}` : undefined
+				});
+			}
+			showRenameFolderModal = false;
+			await refreshDocs();
+			toast.success('文件夹已重命名');
+		} catch {
+			toast.error('重命名文件夹失败');
+		}
+	}
+
+	async function confirmDeleteFolder() {
+		const folderName = spaceContextMenuFolder.trim();
+		if (!folderName) {
+			showDeleteFolderModal = false;
+			return;
+		}
+		try {
+			const targetDocs = getDocListForSpace(spaceContextMenuCategory)
+				.map((item) => item.doc)
+				.filter((doc) => doc.category === folderName);
+			for (const doc of targetDocs) {
+				if (isFolderPlaceholderDoc(doc)) {
+					const { error } = await supabase.from('amnesia_docs').delete().eq('id', doc.id);
+					if (error) throw error;
+					continue;
+				}
+				await updateDoc({
+					id: doc.id,
+					category: spaceContextMenuCategory
+				});
+			}
+			showDeleteFolderModal = false;
+			await refreshDocs();
+			toast.success('文件夹已删除，文章已移回根分组');
+		} catch {
+			toast.error('删除文件夹失败');
+		}
+	}
+
+	async function confirmMoveFolderDocs() {
+		const sourceFolder = spaceContextMenuFolder.trim();
+		const targetFolder = moveFolderTarget.trim();
+		if (!sourceFolder || !targetFolder || sourceFolder === targetFolder) {
+			showMoveFolderModal = false;
+			return;
+		}
+		try {
+			const targetDocs = getDocListForSpace(spaceContextMenuCategory)
+				.map((item) => item.doc)
+				.filter((doc) => doc.category === sourceFolder && !isFolderPlaceholderDoc(doc));
+			for (const doc of targetDocs) {
+				await updateDoc({
+					id: doc.id,
+					category: targetFolder
+				});
+			}
+			showMoveFolderModal = false;
+			await refreshDocs();
+			toast.success('文件夹内文章已批量迁移');
+		} catch {
+			toast.error('批量迁移失败');
+		}
+	}
+
+	function openDocMenuFromEvent(event: MouseEvent, id: number) {
+		event.preventDefault();
+		event.stopPropagation();
+		closeSpaceContextMenu();
+		const target = event.currentTarget as HTMLElement | null;
+		if (!target) {
+			openDocMenu(id);
+			return;
+		}
+		const rect = target.getBoundingClientRect();
+		docMenuPosition = {
+			top: rect.bottom + 6,
+			left: Math.max(12, rect.right - 196)
+		};
+		activeDocMenuId = id;
+		requestAnimationFrame(() => {
+			animateDocMenuIn();
+		});
+	}
+
 	function openDocMenu(id: number) {
+		closeSpaceContextMenu();
 		const target = document.getElementById(`doc-menu-trigger-${id}`);
 		if (!target) {
 			activeDocMenuId = activeDocMenuId === id ? null : id;
@@ -1546,15 +1848,18 @@
 	}
 
 	function openCreateDocModal(category?: string) {
+		closeSpaceContextMenu();
 		newDocTitleInput = '';
 		newDocCategoryInput = category || categoryOptions[0] || '个人笔记';
-		newDocFolderInput = '';
+		newDocFolderInput = spaceContextMenuFolder || '';
 		showCreateDocModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function openCreateFolderModal() {
+		closeSpaceContextMenu();
 		newFolderInput = '';
+		pendingFolderSpace = (newDocCategoryInput as SpaceCategory) || '个人笔记';
 		showCreateFolderModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
@@ -1590,12 +1895,49 @@
 		refreshUsers();
 	}
 
-	function confirmCreateFolder() {
+	async function confirmCreateFolder() {
 		const name = newFolderInput.trim();
 		if (!name) return;
-		newDocFolderInput = name;
-		showCreateFolderModal = false;
-		toast.success('已为新文章设置子文件夹');
+		const currentUser = userState.session?.user;
+		if (!currentUser?.id) {
+			toast.error('缺少用户身份，请重新登录');
+			return;
+		}
+
+		const category = pendingFolderSpace || '个人笔记';
+		const spaceType = getDocSpaceTypeByCategory(category);
+		if (spaceType === 'team' && !currentTeamId) {
+			toast.warning('请先创建或选择一个团队');
+			return;
+		}
+
+		try {
+			const initialContent = await buildInitialDocContent(spaceType);
+			const data = await createSpaceDoc({
+				title: `__folder__:${name}`,
+				emoji: '📁',
+				category: name,
+				content: initialContent.content,
+				author: currentUser.username,
+				ownerUserId: currentUser.id,
+				teamId: spaceType === 'team' ? currentTeamId : null,
+				spaceType,
+				isEncrypted: initialContent.isEncrypted,
+				encryptionVersion: initialContent.encryptionVersion,
+				settings: {
+					isFolder: true,
+					parentSpace: category
+				}
+			});
+			docs = [...docs, await hydrateDocFromDatabase(data)];
+			newDocFolderInput = name;
+			showCreateFolderModal = false;
+			newFolderInput = '';
+			await refreshDocs(data.id);
+			toast.success('文件夹已创建');
+		} catch {
+			toast.error('创建文件夹失败');
+		}
 	}
 
 	async function confirmEncryptionSetup() {
@@ -2215,6 +2557,7 @@ async function copyPageContent() {
 	// 切换文档
 	function handleDocClick(index: number, docTitle: string) {
 		if (activeDocIndex === index) return;
+		closeSpaceContextMenu();
 		activeDocIndex = index;
 		closeQuickSearchModal();
 		toast.info(`正在打开: ${docTitle}`);
@@ -2444,6 +2787,7 @@ async function copyPageContent() {
 					<button
 						type="button"
 						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
+						oncontextmenu={(event) => openSpaceContextMenu(event, 'Amnesia 共享文章')}
 						onclick={() => {
 							globalArticlesOpen = !globalArticlesOpen;
 							requestAnimationFrame(() => animateSectionToggle('global', globalArticlesOpen));
@@ -2456,25 +2800,91 @@ async function copyPageContent() {
 				</div>
 
 				{#if globalArticlesOpen}
-					<div class="dashboard-collapsible-panel dashboard-global-panel space-y-0.5 pl-1">
-						{#each docs.filter(d => d.space_type === 'global') as doc}
-							{@const index = docs.findIndex(d => d.id === doc.id)}
-							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
+					<div
+						class="dashboard-collapsible-panel dashboard-global-panel space-y-0.5 pl-1"
+						ondragover={(event) => event.preventDefault()}
+						ondrop={async (event) => {
+							event.preventDefault();
+							if (draggingDocId) {
+								await moveDocToFolder(draggingDocId, 'Amnesia 共享文章', '');
+								draggingDocId = null;
+							}
+						}}
+					>
+						{#each globalSidebarFolders.rootDocs as item}
+							<div
+								class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === item.index ? 'is-active font-bold' : ''}"
+								oncontextmenu={(event) => openDocMenuFromEvent(event, item.doc.id)}
+								draggable={!isFolderPlaceholderDoc(item.doc)}
+								ondragstart={() => (draggingDocId = item.doc.id)}
+								ondragend={() => (draggingDocId = null)}
+							>
 								<button
 									type="button"
 									class="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-[12px] font-semibold cursor-pointer truncate"
-									onclick={() => handleDocClick(index, doc.title)}
+									onclick={() => handleDocClick(item.index, item.doc.title)}
 								>
-									<span>{doc.emoji}</span>
-									<span class="truncate">{doc.title}</span>
-									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
+									<span>{item.doc.emoji}</span>
+									<span class="truncate">{item.doc.title}</span>
+									<span class="dashboard-space-pill">{getSpaceLabel(item.doc)}</span>
 								</button>
-								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>
+								<button id={`doc-menu-trigger-${item.doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(item.doc.id)}>
 								<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
 									<path d="M0 0h24v24H0z" fill="none" />
 									<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
 								</svg>
 								</button>
+							</div>
+						{/each}
+						{#each globalSidebarFolders.folders as folder}
+							<div class="dashboard-folder-group">
+								<div
+									class="dashboard-folder-row"
+									oncontextmenu={(event) => openSpaceContextMenu(event, 'Amnesia 共享文章', folder.name)}
+									ondragover={(event) => event.preventDefault()}
+									ondrop={async (event) => {
+										event.preventDefault();
+										if (draggingDocId) {
+											await moveDocToFolder(draggingDocId, 'Amnesia 共享文章', folder.name);
+											draggingDocId = null;
+										}
+									}}
+								>
+									<button type="button" class="dashboard-folder-label" onclick={() => toggleFolderCollapsed('Amnesia 共享文章', folder.name)}>
+										<span class:folder-collapsed={isFolderCollapsed('Amnesia 共享文章', folder.name)}>▸</span>
+										<span>📁</span>
+										<span class="truncate">{folder.name}</span>
+									</button>
+								</div>
+								{#if !isFolderCollapsed('Amnesia 共享文章', folder.name)}
+								<div class="dashboard-folder-children">
+									{#each folder.docs as item}
+										<div
+											class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === item.index ? 'is-active font-bold' : ''}"
+											oncontextmenu={(event) => openDocMenuFromEvent(event, item.doc.id)}
+											draggable={!isFolderPlaceholderDoc(item.doc)}
+											ondragstart={() => (draggingDocId = item.doc.id)}
+											ondragend={() => (draggingDocId = null)}
+										>
+											<button
+												type="button"
+												class="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-[12px] font-semibold cursor-pointer truncate"
+												onclick={() => handleDocClick(item.index, item.doc.title)}
+											>
+												<span>{item.doc.emoji}</span>
+												<span class="truncate">{item.doc.title}</span>
+												<span class="dashboard-space-pill">{getSpaceLabel(item.doc)}</span>
+											</button>
+											<button id={`doc-menu-trigger-${item.doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(item.doc.id)}>
+												<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+													<path d="M0 0h24v24H0z" fill="none" />
+													<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
+												</svg>
+											</button>
+										</div>
+									{/each}
+								</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -2487,6 +2897,7 @@ async function copyPageContent() {
 					<button
 						type="button"
 						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
+						oncontextmenu={(event) => openSpaceContextMenu(event, '团队工作区')}
 						onclick={() => {
 							teamWorkspaceOpen = !teamWorkspaceOpen;
 							requestAnimationFrame(() => animateSectionToggle('team', teamWorkspaceOpen));
@@ -2502,7 +2913,17 @@ async function copyPageContent() {
 				</div>
 
 				{#if teamWorkspaceOpen}
-					<div class="dashboard-collapsible-panel dashboard-team-panel space-y-2 pl-1">
+					<div
+						class="dashboard-collapsible-panel dashboard-team-panel space-y-2 pl-1"
+						ondragover={(event) => event.preventDefault()}
+						ondrop={async (event) => {
+							event.preventDefault();
+							if (draggingDocId) {
+								await moveDocToFolder(draggingDocId, '团队工作区', '');
+								draggingDocId = null;
+							}
+						}}
+					>
 						{#if teams.length > 0}
 							<div class="dashboard-team-switcher px-2 py-2 rounded-xl dashboard-sidebar-card">
 								<div class="dashboard-section-label">当前团队</div>
@@ -2527,24 +2948,80 @@ async function copyPageContent() {
 						{:else}
 							<div class="px-2 py-1 text-[11px] dashboard-muted">暂无团队，请先创建或加入团队</div>
 						{/if}
-						{#each docs.filter((d) => d.space_type === 'team' && String(d.team_id ?? '') === currentTeamIdValue) as doc}
-							{@const index = docs.findIndex(d => d.id === doc.id)}
-							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
+						{#each teamSidebarFolders.rootDocs as item}
+							<div
+								class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === item.index ? 'is-active font-bold' : ''}"
+								oncontextmenu={(event) => openDocMenuFromEvent(event, item.doc.id)}
+								draggable={!isFolderPlaceholderDoc(item.doc)}
+								ondragstart={() => (draggingDocId = item.doc.id)}
+								ondragend={() => (draggingDocId = null)}
+							>
 								<button
 									type="button"
 									class="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-[12px] font-semibold cursor-pointer truncate"
-									onclick={() => handleDocClick(index, doc.title)}
+									onclick={() => handleDocClick(item.index, item.doc.title)}
 								>
-									<span>{doc.emoji}</span>
-									<span class="truncate">{doc.title}</span>
-									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
+									<span>{item.doc.emoji}</span>
+									<span class="truncate">{item.doc.title}</span>
+									<span class="dashboard-space-pill">{getSpaceLabel(item.doc)}</span>
 								</button>
-								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>
+								<button id={`doc-menu-trigger-${item.doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(item.doc.id)}>
 									<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
 										<path d="M0 0h24v24H0z" fill="none" />
 										<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
 									</svg>
 								</button>
+							</div>
+						{/each}
+						{#each teamSidebarFolders.folders as folder}
+							<div class="dashboard-folder-group">
+								<div
+									class="dashboard-folder-row"
+									oncontextmenu={(event) => openSpaceContextMenu(event, '团队工作区', folder.name)}
+									ondragover={(event) => event.preventDefault()}
+									ondrop={async (event) => {
+										event.preventDefault();
+										if (draggingDocId) {
+											await moveDocToFolder(draggingDocId, '团队工作区', folder.name);
+											draggingDocId = null;
+										}
+									}}
+								>
+									<button type="button" class="dashboard-folder-label" onclick={() => toggleFolderCollapsed('团队工作区', folder.name)}>
+										<span class:folder-collapsed={isFolderCollapsed('团队工作区', folder.name)}>▸</span>
+										<span>📁</span>
+										<span class="truncate">{folder.name}</span>
+									</button>
+								</div>
+								{#if !isFolderCollapsed('团队工作区', folder.name)}
+								<div class="dashboard-folder-children">
+									{#each folder.docs as item}
+										<div
+											class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === item.index ? 'is-active font-bold' : ''}"
+											oncontextmenu={(event) => openDocMenuFromEvent(event, item.doc.id)}
+											draggable={!isFolderPlaceholderDoc(item.doc)}
+											ondragstart={() => (draggingDocId = item.doc.id)}
+											ondragend={() => (draggingDocId = null)}
+										>
+											<button
+												type="button"
+												class="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-[12px] font-semibold cursor-pointer truncate"
+												onclick={() => handleDocClick(item.index, item.doc.title)}
+											>
+												<span>{item.doc.emoji}</span>
+												<span class="truncate">{item.doc.title}</span>
+												<span class="dashboard-space-pill">{getSpaceLabel(item.doc)}</span>
+											</button>
+											<button id={`doc-menu-trigger-${item.doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(item.doc.id)}>
+												<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+													<path d="M0 0h24v24H0z" fill="none" />
+													<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
+												</svg>
+											</button>
+										</div>
+									{/each}
+								</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -2557,6 +3034,7 @@ async function copyPageContent() {
 					<button
 						type="button"
 						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
+						oncontextmenu={(event) => openSpaceContextMenu(event, '个人笔记')}
 						onclick={() => {
 							personalNotesOpen = !personalNotesOpen;
 							requestAnimationFrame(() => animateSectionToggle('private', personalNotesOpen));
@@ -2569,25 +3047,91 @@ async function copyPageContent() {
 				</div>
 
 				{#if personalNotesOpen}
-					<div class="dashboard-collapsible-panel dashboard-private-panel space-y-0.5 pl-1">
-						{#each docs.filter(d => d.category === '个人笔记') as doc}
-							{@const index = docs.findIndex(d => d.id === doc.id)}
-							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
+					<div
+						class="dashboard-collapsible-panel dashboard-private-panel space-y-0.5 pl-1"
+						ondragover={(event) => event.preventDefault()}
+						ondrop={async (event) => {
+							event.preventDefault();
+							if (draggingDocId) {
+								await moveDocToFolder(draggingDocId, '个人笔记', '');
+								draggingDocId = null;
+							}
+						}}
+					>
+						{#each privateSidebarFolders.rootDocs as item}
+							<div
+								class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === item.index ? 'is-active font-bold' : ''}"
+								oncontextmenu={(event) => openDocMenuFromEvent(event, item.doc.id)}
+								draggable={!isFolderPlaceholderDoc(item.doc)}
+								ondragstart={() => (draggingDocId = item.doc.id)}
+								ondragend={() => (draggingDocId = null)}
+							>
 								<button
 									type="button"
 									class="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-[12px] font-semibold cursor-pointer truncate"
-									onclick={() => handleDocClick(index, doc.title)}
+									onclick={() => handleDocClick(item.index, item.doc.title)}
 								>
-									<span>{doc.emoji}</span>
-									<span class="truncate">{doc.title}</span>
-									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
+									<span>{item.doc.emoji}</span>
+									<span class="truncate">{item.doc.title}</span>
+									<span class="dashboard-space-pill">{getSpaceLabel(item.doc)}</span>
 								</button>
-								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>
+								<button id={`doc-menu-trigger-${item.doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(item.doc.id)}>
     								<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
     									<path d="M0 0h24v24H0z" fill="none" />
     									<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
     								</svg>
 								</button>
+							</div>
+						{/each}
+						{#each privateSidebarFolders.folders as folder}
+							<div class="dashboard-folder-group">
+								<div
+									class="dashboard-folder-row"
+									oncontextmenu={(event) => openSpaceContextMenu(event, '个人笔记', folder.name)}
+									ondragover={(event) => event.preventDefault()}
+									ondrop={async (event) => {
+										event.preventDefault();
+										if (draggingDocId) {
+											await moveDocToFolder(draggingDocId, '个人笔记', folder.name);
+											draggingDocId = null;
+										}
+									}}
+								>
+									<button type="button" class="dashboard-folder-label" onclick={() => toggleFolderCollapsed('个人笔记', folder.name)}>
+										<span class:folder-collapsed={isFolderCollapsed('个人笔记', folder.name)}>▸</span>
+										<span>📁</span>
+										<span class="truncate">{folder.name}</span>
+									</button>
+								</div>
+								{#if !isFolderCollapsed('个人笔记', folder.name)}
+								<div class="dashboard-folder-children">
+									{#each folder.docs as item}
+										<div
+											class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === item.index ? 'is-active font-bold' : ''}"
+											oncontextmenu={(event) => openDocMenuFromEvent(event, item.doc.id)}
+											draggable={!isFolderPlaceholderDoc(item.doc)}
+											ondragstart={() => (draggingDocId = item.doc.id)}
+											ondragend={() => (draggingDocId = null)}
+										>
+											<button
+												type="button"
+												class="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-[12px] font-semibold cursor-pointer truncate"
+												onclick={() => handleDocClick(item.index, item.doc.title)}
+											>
+												<span>{item.doc.emoji}</span>
+												<span class="truncate">{item.doc.title}</span>
+												<span class="dashboard-space-pill">{getSpaceLabel(item.doc)}</span>
+											</button>
+											<button id={`doc-menu-trigger-${item.doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(item.doc.id)}>
+		    								<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+		    									<path d="M0 0h24v24H0z" fill="none" />
+		    									<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0m7 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0" />
+		    								</svg>
+											</button>
+										</div>
+									{/each}
+								</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -3037,6 +3581,7 @@ async function copyPageContent() {
 			class="doc-menu-item"
 			type="button"
 			onclick={() => {
+				propertiesDocId = activeDocMenuId;
 				showPropertiesModal = true;
 				closeDocMenu();
 			}}
@@ -3060,6 +3605,57 @@ async function copyPageContent() {
 				<span class="doc-menu-desc">移除此文章</span>
 			</span>
 		</button>
+	</div>
+{/if}
+
+{#if spaceContextMenuOpen}
+	<div class="doc-menu-backdrop" onclick={closeSpaceContextMenu}></div>
+	<div
+		bind:this={spaceContextMenuNode}
+		class="doc-menu doc-menu-floating space-context-menu"
+		style={`top:${spaceContextMenuPosition.top}px; left:${spaceContextMenuPosition.left}px;`}
+	>
+		<div class="doc-menu-headerline">
+			<span class="doc-menu-kicker">{spaceContextMenuCategory}</span>
+		</div>
+		<button class="doc-menu-item" type="button" onclick={() => createDocInSpace(spaceContextMenuCategory)}>
+			<span class="doc-menu-icon">＋</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">添加文章</span>
+				<span class="doc-menu-desc">在当前空间原地创建一篇新文章</span>
+			</span>
+		</button>
+		<button class="doc-menu-item" type="button" onclick={() => createFolderInSpace(spaceContextMenuCategory)}>
+			<span class="doc-menu-icon">📁</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">添加文件夹</span>
+				<span class="doc-menu-desc">只输入名字，创建后立即出现在左侧</span>
+			</span>
+		</button>
+		{#if spaceContextMenuFolder}
+			<div class="doc-menu-divider"></div>
+			<button class="doc-menu-item" type="button" onclick={openRenameFolderModal}>
+				<span class="doc-menu-icon">✎</span>
+				<span class="doc-menu-copy">
+					<span class="doc-menu-title">重命名文件夹</span>
+					<span class="doc-menu-desc">修改当前文件夹名称</span>
+				</span>
+			</button>
+			<button class="doc-menu-item" type="button" onclick={openMoveFolderModal}>
+				<span class="doc-menu-icon">⇄</span>
+				<span class="doc-menu-copy">
+					<span class="doc-menu-title">批量迁移文章</span>
+					<span class="doc-menu-desc">把当前文件夹内文章移到别的文件夹</span>
+				</span>
+			</button>
+			<button class="doc-menu-item is-danger" type="button" onclick={openDeleteFolderModal}>
+				<span class="doc-menu-icon">⊘</span>
+				<span class="doc-menu-copy">
+					<span class="doc-menu-title">删除文件夹</span>
+					<span class="doc-menu-desc">删除文件夹并把文章移回根分组</span>
+				</span>
+			</button>
+		{/if}
 	</div>
 {/if}
 
@@ -3324,6 +3920,52 @@ async function copyPageContent() {
 	</div>
 {/if}
 
+{#if showRenameFolderModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">重命名文件夹</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">文件夹名称</span>
+				<input bind:value={renameFolderInput} class="dashboard-input" placeholder="新的文件夹名称" />
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showRenameFolderModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmRenameFolder}>保存</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showDeleteFolderModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">删除文件夹</h3>
+			<div class="dashboard-helper-text">确认删除文件夹“{spaceContextMenuFolder}”？文件夹内文章会被移回当前空间根分组。</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showDeleteFolderModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-danger" onclick={confirmDeleteFolder}>删除</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showMoveFolderModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">批量迁移文件夹内文章</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">目标文件夹</span>
+				<input bind:value={moveFolderTarget} class="dashboard-input" placeholder="输入目标文件夹名称" />
+			</div>
+			<div class="dashboard-helper-text">会把“{spaceContextMenuFolder}”里的普通文章批量移动到目标文件夹。</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showMoveFolderModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmMoveFolderDocs}>迁移</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
 {#if showDeleteDocModal}
 	<div class="dashboard-modal-backdrop">
 		<div class="dashboard-modal-box">
@@ -3503,13 +4145,14 @@ async function copyPageContent() {
 		<div class="dashboard-modal-box">
 			<h3 class="dashboard-modal-title">页面属性</h3>
 			<div class="dashboard-properties-grid">
-				<div class="dashboard-property-row"><span class="dashboard-muted">作者</span><span>{activeDoc?.author || userState.session?.user?.username || '未知'}</span></div>
-				<div class="dashboard-property-row"><span class="dashboard-muted">创建时间</span><span>{activeDoc?.created_at || '未记录'}</span></div>
-				<div class="dashboard-property-row"><span class="dashboard-muted">最后编辑</span><span>{activeDoc?.updated_at || '未记录'}</span></div>
-				<div class="dashboard-property-row"><span class="dashboard-muted">分类</span><span>{activeDoc?.category || '未分类'}</span></div>
+				<div class="dashboard-property-row"><span class="dashboard-muted">作者</span><span>{propertiesDoc?.author || userState.session?.user?.username || '未知'}</span></div>
+				<div class="dashboard-property-row"><span class="dashboard-muted">创建时间</span><span>{propertiesDoc?.created_at || '未记录'}</span></div>
+				<div class="dashboard-property-row"><span class="dashboard-muted">最后编辑</span><span>{propertiesDoc?.updated_at || '未记录'}</span></div>
+				<div class="dashboard-property-row"><span class="dashboard-muted">分类</span><span>{propertiesDoc?.category || '未分类'}</span></div>
+				<div class="dashboard-property-row"><span class="dashboard-muted">空间</span><span>{getSpaceLabel(propertiesDoc)}</span></div>
 			</div>
 			<div class="dashboard-modal-actions">
-				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showPropertiesModal = false}>关闭</button>
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => { showPropertiesModal = false; propertiesDocId = null; }}>关闭</button>
 			</div>
 		</div>
 	</div>
@@ -5087,6 +5730,57 @@ async function copyPageContent() {
 		display: flex;
 		align-items: center;
 		gap: 0.25rem;
+	}
+
+	.dashboard-folder-group {
+		display: grid;
+		gap: 0.18rem;
+	}
+
+	.dashboard-folder-row {
+		display: flex;
+		align-items: center;
+		min-height: 1.9rem;
+		padding-left: 0.15rem;
+	}
+
+	.dashboard-folder-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		min-width: 0;
+		width: 100%;
+		padding: 0.2rem 0.45rem;
+		border-radius: calc(var(--dashboard-radius) * 0.35);
+		background: transparent;
+		border: 1px solid transparent;
+		color: var(--dashboard-soft-fg);
+		font-size: 0.73rem;
+		font-weight: 700;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.dashboard-folder-label:hover {
+		background: var(--dashboard-hover-bg);
+		border-color: var(--dashboard-border);
+	}
+
+	.dashboard-folder-children {
+		display: grid;
+		gap: 0.18rem;
+		padding-left: 1rem;
+		border-left: 1px dashed color-mix(in oklab, var(--dashboard-fg) 10%, transparent);
+		margin-left: 0.7rem;
+	}
+
+	.space-context-menu {
+		width: min(18rem, calc(100vw - 1.5rem));
+	}
+
+	.folder-collapsed {
+		transform: rotate(0deg);
+		transition: transform 160ms ease;
 	}
 
 	.dashboard-folder-add-btn {
