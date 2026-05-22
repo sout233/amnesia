@@ -1,0 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Noto+Serif+SC:wght@200..900&family=Outfit:wght@100..900&display=swap');
+@import 'tailwindcss';
+@plugin "@tailwindcss/typography";
+@plugin 'daisyui' {
+	themes:
+		light --default,
+		dark --prefersdark,
+		cupcake;
+}
+
+body {
+	font-family: 'Outfit', 'Noto Serif SC', sans-serif;
+	margin: 0;
+	padding: 0;
+	overflow-x: hidden;
+}
+
+.bbh-bartle-regular {
+	font-family: 'BBH Bartle', sans-serif;
+	font-weight: 400;
+	font-style: normal;
+}
+
+.noto {
+	font-family: 'Noto Serif SC', serif;
+	font-optical-sizing: auto;
+	font-weight: 500;
+	font-style: normal;
+}
+
+.jetbrains-mono {
+  font-family: "JetBrains Mono", monospace;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+}
+
+.grid-bg {
+	--grid-color: rgba(255, 255, 255, 0.05);
+	--grid-size: 40px;
+
+	background-image:
+		linear-gradient(to right, var(--grid-color) 1px, transparent 1px),
+		linear-gradient(to bottom, var(--grid-color) 1px, transparent 1px);
+
+	background-size: var(--grid-size) var(--grid-size);
+
+	animation: moveGrid 20s linear infinite;
+}
+
+.grid-bg-white {
+	--grid-color: rgba(0, 0, 0, 0.03);
+	--grid-size: 50px;
+
+	background-image:
+		linear-gradient(to right, var(--grid-color) 1px, transparent 1px),
+		linear-gradient(to bottom, var(--grid-color) 1px, transparent 1px);
+
+	background-size: var(--grid-size) var(--grid-size);
+
+	animation: moveGrid 30s linear infinite;
+}
+
+@keyframes moveGrid {
+	0% {
+		background-position: 0 0;
+	}
+	100% {
+		background-position: var(--grid-size) var(--grid-size);
+	}
+}
+
+/* 自定义选区颜色 */
+::selection {
+	background: rgba(0, 0, 0, 0.9);
+	color: #ffffff;
+}
+
+/* 隐藏自带的滚动条，创造极简视觉 */
+::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: rgba(0, 0, 0, 0.2);
+	border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: rgba(0, 0, 0, 0.4);
+}
