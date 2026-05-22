@@ -156,6 +156,13 @@
 	let showMoveFolderModal = $state(false);
 	let collapsedFolderKeys = $state<Record<string, boolean>>({});
 	let draggingDocId = $state<number | null>(null);
+	let sidebarDropIndicator = $state<{ top: number; width: number; left: number; visible: boolean }>({
+		top: 0,
+		width: 0,
+		left: 0,
+		visible: false
+	});
+	let blockDragIndicator = $state<{ top: number; visible: boolean }>({ top: 0, visible: false });
 
 	type EncryptedDocPayload = {
 		type: 'amnesia-encrypted-doc';
@@ -168,7 +175,13 @@
 	type SpaceCategory = 'Amnesia 共享文章' | '团队工作区' | '个人笔记';
 	type SpaceContextAction = 'doc' | 'folder';
 	type SidebarDocRef = { doc: DocRecord; index: number };
-	type SidebarFolderEntry = { key: string; name: string; docs: SidebarDocRef[] };
+	type SidebarFolderEntry = {
+		key: string;
+		name: string;
+		docs: SidebarDocRef[];
+		order: number;
+		placeholderDocId?: number;
+	};
 
 	type ThemeConfig = {
 		name: ThemePreset;
@@ -954,6 +967,11 @@
 		return doc.title.replace(/^__folder__:/, '').trim();
 	}
 
+	function getSidebarOrder(doc: DocRecord) {
+		const value = (doc.settings as Record<string, unknown> | undefined)?.sidebarOrder;
+		return typeof value === 'number' ? value : 0;
+	}
+
 	function getDocListForSpace(spaceCategory: SpaceCategory) {
 		if (spaceCategory === 'Amnesia 共享文章') {
 			return docs
@@ -986,7 +1004,9 @@
 					folderMap.set(folderName, {
 						key: getFolderKey(spaceCategory, folderName),
 						name: folderName,
-						docs: []
+						docs: [],
+						order: getSidebarOrder(doc),
+						placeholderDocId: doc.id
 					});
 				}
 				continue;
@@ -1001,15 +1021,25 @@
 			const existing = folderMap.get(folderName) ?? {
 				key: getFolderKey(spaceCategory, folderName),
 				name: folderName,
-				docs: []
+				docs: [],
+				order: getSidebarOrder(doc)
 			};
 			existing.docs.push(docRef);
 			folderMap.set(folderName, existing);
 		}
 
+		for (const folder of folderMap.values()) {
+			folder.docs.sort((a, b) => getSidebarOrder(a.doc) - getSidebarOrder(b.doc));
+			if (!folder.order && folder.docs.length > 0) {
+				folder.order = getSidebarOrder(folder.docs[0].doc);
+			}
+		}
+
 		return {
-			rootDocs,
-			folders: Array.from(folderMap.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+			rootDocs: rootDocs.sort((a, b) => getSidebarOrder(a.doc) - getSidebarOrder(b.doc)),
+			folders: Array.from(folderMap.values()).sort((a, b) =>
+				a.order === b.order ? a.name.localeCompare(b.name, 'zh-CN') : a.order - b.order
+			)
 		};
 	}
 
@@ -1041,6 +1071,23 @@
 		} catch {
 			toast.error('移动文章失败');
 		}
+	}
+
+	function showSidebarDropLine(target: HTMLElement) {
+		const rect = target.getBoundingClientRect();
+		sidebarDropIndicator = {
+			top: rect.top + rect.height,
+			left: rect.left + 10,
+			width: Math.max(60, rect.width - 20),
+			visible: true
+		};
+	}
+
+	function hideSidebarDropLine() {
+		sidebarDropIndicator = {
+			...sidebarDropIndicator,
+			visible: false
+		};
 	}
 
 	function getEffectiveCategory(spaceCategory: string, folderName: string) {
@@ -2393,24 +2440,16 @@ async function copyPageContent() {
 			hideBlockHandle();
 			return;
 		}
-
-		const coords = editor.view.posAtCoords({ left: clientX, top: clientY });
-		if (!coords) {
-			hideBlockHandle();
-			return;
-		}
-
-		const resolved = editor.state.doc.resolve(coords.pos);
-		const topLevelIndex = resolved.index(0);
-		const block = editorNode.children.item(topLevelIndex) as HTMLElement | null;
-		if (!block) {
+		const hit = document.elementFromPoint(clientX, clientY);
+		const block = getTopLevelBlock(hit);
+		if (!block || block.closest('.editor-toolbar-overlay, .block-handle, .command-menu')) {
 			hideBlockHandle();
 			return;
 		}
 
 		const shellRect = editorShellNode.getBoundingClientRect();
 		const blockRect = block.getBoundingClientRect();
-		blockHandleTop = blockRect.top - shellRect.top + Math.min(blockRect.height / 2, 24);
+		blockHandleTop = blockRect.top - shellRect.top + blockRect.height / 2;
 		blockHandleLeft = blockRect.left - shellRect.left - 42;
 		activeBlockElement = block;
 		blockHandleVisible = true;
@@ -2496,6 +2535,87 @@ async function copyPageContent() {
 			.insertContentAt(pos + node.nodeSize, '<p></p>')
 			.setTextSelection(pos + node.nodeSize + 1)
 			.run();
+	}
+
+	function reorderActiveBlockToPoint(clientY: number) {
+		if (!editor || !editorNode || !activeBlockElement) return;
+		const block = activeBlockElement;
+		const blocks = Array.from(editorNode.children).filter(
+			(node): node is HTMLElement => node instanceof HTMLElement
+		);
+		const fromPos = editor.view.posAtDOM(block, 0);
+		const sourceNode = editor.state.doc.nodeAt(fromPos);
+		if (!sourceNode) return;
+
+		let targetElement: HTMLElement | null = null;
+		for (const candidate of blocks) {
+			if (candidate === block) continue;
+			const rect = candidate.getBoundingClientRect();
+			if (clientY < rect.top + rect.height / 2) {
+				targetElement = candidate;
+				break;
+			}
+		}
+
+		let insertPos = editor.state.doc.content.size;
+		if (targetElement) {
+			insertPos = editor.view.posAtDOM(targetElement, 0);
+		}
+
+		const sourceSlice = sourceNode.toJSON();
+		editor
+			.chain()
+			.focus()
+			.deleteRange({ from: fromPos, to: fromPos + sourceNode.nodeSize })
+			.insertContentAt(insertPos > fromPos ? insertPos - sourceNode.nodeSize : insertPos, sourceSlice)
+			.run();
+	}
+
+	function handleBlockDragStart(event: DragEvent) {
+		if (!activeBlockElement) return;
+		blockHandleLocked = true;
+		event.dataTransfer?.setData('text/plain', 'amnesia-block');
+		event.dataTransfer?.setDragImage(activeBlockElement, 12, 12);
+	}
+
+	function handleBlockDragOver(event: DragEvent) {
+		if (editMode !== 'rich' || !editorNode) return;
+		event.preventDefault();
+		const blocks = Array.from(editorNode.children).filter(
+			(node): node is HTMLElement => node instanceof HTMLElement
+		);
+		const hovered = blocks.find((candidate) => {
+			const rect = candidate.getBoundingClientRect();
+			return event.clientY >= rect.top && event.clientY <= rect.bottom;
+		});
+		if (!hovered) return;
+		const rect = hovered.getBoundingClientRect();
+		blockDragIndicator = {
+			top: rect.top - editorNode.getBoundingClientRect().top + (event.clientY > rect.top + rect.height / 2 ? rect.height : 0),
+			visible: true
+		};
+	}
+
+	function handleBlockDrop(event: DragEvent) {
+		if (editMode !== 'rich') return;
+		event.preventDefault();
+		if (event.dataTransfer?.files?.length) {
+			const file = event.dataTransfer.files[0];
+			if (file) {
+				handleImageFileUpload(file);
+			}
+			blockDragIndicator = { top: 0, visible: false };
+			blockHandleLocked = false;
+			return;
+		}
+		reorderActiveBlockToPoint(event.clientY);
+		blockDragIndicator = { top: 0, visible: false };
+		blockHandleLocked = false;
+	}
+
+	function handleBlockDragEnd() {
+		blockDragIndicator = { top: 0, visible: false };
+		blockHandleLocked = false;
 	}
 
 	async function toggleEditMode(mode: 'rich' | 'html' | 'markdown') {
@@ -2707,7 +2827,9 @@ async function copyPageContent() {
 	});
 
 	onDestroy(() => {
-		window.removeEventListener('keydown', handleDashboardKeydown);
+		if (typeof window !== 'undefined') {
+			window.removeEventListener('keydown', handleDashboardKeydown);
+		}
 		dashboardMotionCleanup?.();
 		dashboardMotionCleanup = null;
 		if (editor) {
@@ -2731,9 +2853,9 @@ async function copyPageContent() {
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		bind:this={sidebarNode}
-		class="dashboard-sidebar w-60 h-full flex flex-col justify-between shrink-0 select-none z-10"
+		class="dashboard-sidebar w-60 h-full min-h-0 flex flex-col justify-between shrink-0 select-none z-10 overflow-visible"
 	>
-		<div class="flex flex-col overflow-y-auto overflow-x-visible p-2.5 space-y-3">
+		<div class="flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-visible p-2.5 space-y-3">
 
 			<!-- 用户资料块 -->
 			<button
@@ -2781,6 +2903,13 @@ async function copyPageContent() {
 				{/if}
 			</div>
 
+			{#if sidebarDropIndicator.visible}
+				<div
+					class="sidebar-drop-indicator"
+					style={`top:${sidebarDropIndicator.top}px; left:${sidebarDropIndicator.left}px; width:${sidebarDropIndicator.width}px;`}
+				></div>
+			{/if}
+
 			<!-- 文档大分类 - 全局文章 -->
 			<div class="space-y-1">
 				<div class="dashboard-folder-header">
@@ -2818,6 +2947,11 @@ async function copyPageContent() {
 								draggable={!isFolderPlaceholderDoc(item.doc)}
 								ondragstart={() => (draggingDocId = item.doc.id)}
 								ondragend={() => (draggingDocId = null)}
+								ondragover={(event) => {
+									event.preventDefault();
+									showSidebarDropLine(event.currentTarget as HTMLElement);
+								}}
+								ondrop={hideSidebarDropLine}
 							>
 								<button
 									type="button"
@@ -2865,6 +2999,11 @@ async function copyPageContent() {
 											draggable={!isFolderPlaceholderDoc(item.doc)}
 											ondragstart={() => (draggingDocId = item.doc.id)}
 											ondragend={() => (draggingDocId = null)}
+											ondragover={(event) => {
+												event.preventDefault();
+												showSidebarDropLine(event.currentTarget as HTMLElement);
+											}}
+											ondrop={hideSidebarDropLine}
 										>
 											<button
 												type="button"
@@ -2955,6 +3094,11 @@ async function copyPageContent() {
 								draggable={!isFolderPlaceholderDoc(item.doc)}
 								ondragstart={() => (draggingDocId = item.doc.id)}
 								ondragend={() => (draggingDocId = null)}
+								ondragover={(event) => {
+									event.preventDefault();
+									showSidebarDropLine(event.currentTarget as HTMLElement);
+								}}
+								ondrop={hideSidebarDropLine}
 							>
 								<button
 									type="button"
@@ -3002,6 +3146,11 @@ async function copyPageContent() {
 											draggable={!isFolderPlaceholderDoc(item.doc)}
 											ondragstart={() => (draggingDocId = item.doc.id)}
 											ondragend={() => (draggingDocId = null)}
+											ondragover={(event) => {
+												event.preventDefault();
+												showSidebarDropLine(event.currentTarget as HTMLElement);
+											}}
+											ondrop={hideSidebarDropLine}
 										>
 											<button
 												type="button"
@@ -3065,6 +3214,11 @@ async function copyPageContent() {
 								draggable={!isFolderPlaceholderDoc(item.doc)}
 								ondragstart={() => (draggingDocId = item.doc.id)}
 								ondragend={() => (draggingDocId = null)}
+								ondragover={(event) => {
+									event.preventDefault();
+									showSidebarDropLine(event.currentTarget as HTMLElement);
+								}}
+								ondrop={hideSidebarDropLine}
 							>
 								<button
 									type="button"
@@ -3112,6 +3266,11 @@ async function copyPageContent() {
 											draggable={!isFolderPlaceholderDoc(item.doc)}
 											ondragstart={() => (draggingDocId = item.doc.id)}
 											ondragend={() => (draggingDocId = null)}
+											ondragover={(event) => {
+												event.preventDefault();
+												showSidebarDropLine(event.currentTarget as HTMLElement);
+											}}
+											ondrop={hideSidebarDropLine}
 										>
 											<button
 												type="button"
@@ -3274,15 +3433,10 @@ async function copyPageContent() {
 					class="editor-shell"
 					onmousemove={(e) => updateBlockHandleFromPoint(e.clientX, e.clientY)}
 					onmouseleave={releaseBlockHandle}
+					ondrop={handleBlockDrop}
 					ondragover={(e) => {
 						e.preventDefault();
-					}}
-					ondrop={(e) => {
-						e.preventDefault();
-						const file = e.dataTransfer?.files?.[0];
-						if (file) {
-							handleImageFileUpload(file);
-						}
+						handleBlockDragOver(e);
 					}}
 				>
 					<div
@@ -3306,7 +3460,7 @@ async function copyPageContent() {
 
 					{#if editMode === 'rich' && blockHandleVisible}
 						<div
-							class="block-handle"
+							class="block-handle opacity-0"
 							style={`top:${blockHandleTop}px; left:${blockHandleLeft}px;`}
 							onmouseenter={() => {
 								blockHandleLocked = true;
@@ -3317,10 +3471,22 @@ async function copyPageContent() {
 							<button type="button" class="handle-button" onclick={insertBlockBelow} title="插入新块">
 								+
 							</button>
-							<button type="button" class="handle-button handle-drag" onclick={openBlockCommandMenu} title="块操作">
+							<button
+								type="button"
+								class="handle-button handle-drag"
+								onclick={openBlockCommandMenu}
+								ondragstart={handleBlockDragStart}
+								ondragend={handleBlockDragEnd}
+								draggable="true"
+								title="块操作"
+							>
 								⋮⋮
 							</button>
 						</div>
+					{/if}
+
+					{#if blockDragIndicator.visible}
+						<div class="block-drop-indicator" style={`top:${blockDragIndicator.top}px;`}></div>
 					{/if}
 
 					{#if commandMenuOpen}
@@ -5411,6 +5577,18 @@ async function copyPageContent() {
 		padding: 0.1rem 0 0.3rem 0.2rem;
 	}
 
+	.block-drop-indicator {
+		position: absolute;
+		left: 0.45rem;
+		right: 0.85rem;
+		z-index: 26;
+		height: 2px;
+		border-radius: 999px;
+		background: var(--dashboard-accent);
+		box-shadow: 0 0 0 1px color-mix(in oklab, var(--dashboard-panel) 82%, transparent);
+		pointer-events: none;
+	}
+
 	.editor-toolbar-sticky {
 		position: sticky;
 		bottom: 1rem;
@@ -5529,6 +5707,11 @@ async function copyPageContent() {
 	.handle-drag {
 		font-size: 0.75rem;
 		letter-spacing: -0.1em;
+		cursor: grab;
+	}
+
+	.handle-drag:active {
+		cursor: grabbing;
 	}
 
 	.command-menu {
@@ -5776,6 +5959,16 @@ async function copyPageContent() {
 
 	.space-context-menu {
 		width: min(18rem, calc(100vw - 1.5rem));
+	}
+
+	.sidebar-drop-indicator {
+		position: fixed;
+		z-index: 48;
+		height: 2px;
+		border-radius: 999px;
+		background: var(--dashboard-accent);
+		box-shadow: 0 0 0 1px color-mix(in oklab, var(--dashboard-panel) 82%, transparent);
+		pointer-events: none;
 	}
 
 	.folder-collapsed {
