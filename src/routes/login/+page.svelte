@@ -4,7 +4,8 @@
 	import { toast } from '$lib/toastQueue.svelte';
 	import { goto } from '$app/navigation';
 	import { userState } from '$lib/userData.svelte';
-	import { verifyUser } from '$lib/userDatabase';
+	import { loginWithPassword } from '$lib/auth/authService';
+	import { deriveDocEncryptionKey } from '$lib/crypto/appCrypto';
 
 	let loginPanel = $state<HTMLElement | null>(null);
 	let backButton = $state<HTMLElement | null>(null);
@@ -48,18 +49,17 @@
 			// 延迟一小会儿提供更好视觉交互反馈
 			await new Promise((resolve) => setTimeout(resolve, 600));
 
-			// 匹配云端 Supabase 数据库用户
-			let matched = await verifyUser(username, password);
-			// 硬编码默认管理员 sout 兜底匹配以防因网络或初始化问题无法登录
-			if (!matched && username === 'sout' && password === 'Wgc123456.') {
-				matched = { username: 'sout', role: 'root' };
-			}
+			const matched = await loginWithPassword({ username, password });
 
 			if (matched) {
 				userState.setSession({
 					user: {
+						id: matched.id,
 						username: matched.username,
-						role: matched.role
+						role: matched.systemRole,
+						encryptionReady: matched.encryptionReady,
+						encryptionNoticeAccepted: matched.encryptionNoticeAccepted,
+						docEncryptionKey: await deriveDocEncryptionKey(password)
 					}
 				});
 				toast.success('登录成功！已加载工作台');
@@ -151,6 +151,10 @@
 					登录
 				{/if}
 			</button>
+
+			<a href="/register" class="block text-center text-xs text-black/55 font-semibold pt-2">
+				没有账号？前往注册
+			</a>
 		</form>
 	</div>
 

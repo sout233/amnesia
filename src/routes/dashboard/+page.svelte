@@ -6,6 +6,11 @@
 	import { goto } from '$app/navigation';
 	import { getUsers, addUser, deleteUser, type UserRecord } from '$lib/userDatabase';
 	import { supabase } from '$lib/supabaseClient';
+	import { listAccessibleDocs, createDoc as createSpaceDoc, updateDoc } from '$lib/docs/docService';
+	import { decryptDocumentContent, deriveDocEncryptionKey, encryptDocumentContent } from '$lib/crypto/appCrypto';
+	import { loginWithPassword, setUserEncryptionReady } from '$lib/auth/authService';
+	import { acceptTeamInvite, createTeam, createTeamInvite, listTeamInvites, listUserTeams } from '$lib/teams/teamService';
+	import type { DocSpaceType, TeamInviteRecord, TeamRecord } from '$lib/types/domain';
 	import { Editor } from '@tiptap/core';
 	import StarterKit from '@tiptap/starter-kit';
 	import Link from '@tiptap/extension-link';
@@ -26,6 +31,12 @@
 		title: string;
 		category: string;
 		content: string;
+		space_type?: DocSpaceType;
+		owner_user_id?: string | number | null;
+		team_id?: string | number | null;
+		is_encrypted?: boolean;
+		encryption_version?: number;
+		settings?: Record<string, unknown>;
 		created_at?: string;
 		updated_at?: string;
 		author?: string;
@@ -76,10 +87,45 @@
 	let selectedTextColor = $state('#111827');
 	let selectedHighlightColor = $state('#fef08a');
 	let docMenuPosition = $state({ top: 0, left: 0 });
+	let docMenuNode = $state<HTMLElement | null>(null);
 	let showTextColorModal = $state(false);
 	let showHighlightColorModal = $state(false);
 	let textColorControls = $state({ l: 24, c: 0.03, h: 258, a: 1 });
 	let highlightColorControls = $state({ l: 92, c: 0.08, h: 95, a: 1 });
+	let showLinkModal = $state(false);
+	let showImageModal = $state(false);
+	let showHtmlModal = $state(false);
+	let showRenameModal = $state(false);
+	let showDeleteDocModal = $state(false);
+	let showDeleteUserModal = $state(false);
+	let showCreateDocModal = $state(false);
+	let showCreateFolderModal = $state(false);
+	let showEncryptionSetupModal = $state(false);
+	let showTeamWorkspaceModal = $state(false);
+	let linkUrlInput = $state('');
+	let linkTextInput = $state('');
+	let imageUrlInput = $state('');
+	let htmlEmbedInput = $state('');
+	let renameInput = $state('');
+	let pendingDeleteUsername = $state('');
+	let newDocTitleInput = $state('');
+	let newDocCategoryInput = $state('个人笔记');
+	let newFolderInput = $state('');
+	let newDocFolderInput = $state('');
+	let encryptionPasswordInput = $state('');
+	let currentTeamId = $state<string | number | null>(null);
+	let teams = $state<Array<TeamRecord & { memberRole?: string }>>([]);
+	let teamInvites = $state<TeamInviteRecord[]>([]);
+	let inviteTokenInput = $state('');
+	let newTeamName = $state('');
+	let newTeamSlug = $state('');
+
+	type EncryptedDocPayload = {
+		type: 'amnesia-encrypted-doc';
+		version: number;
+		iv: string;
+		cipherText: string;
+	};
 
 	type ThemePreset = 'cupcake' | 'shadcn' | 'ibm' | 'macos';
 
@@ -123,6 +169,23 @@
 		codeBlockStyle: 'fenced'
 	});
 
+	(turndownService as unknown as {
+		addRule: (
+			key: string,
+			rule: {
+				filter: (node: Node) => boolean;
+				replacement: (content: string, node: Node) => string;
+			}
+		) => void;
+	}).addRule('preserveInlineStyledNodes', {
+		filter: (node: Node) =>
+			node instanceof HTMLElement &&
+			(node.hasAttribute('data-inline-styled') ||
+				node.tagName === 'MARK' ||
+				(node.tagName === 'SPAN' && node.hasAttribute('style'))),
+		replacement: (_content: string, node: Node) => (node as HTMLElement).outerHTML
+	});
+
 	function isEditorActive(type: string, attrs?: Record<string, unknown>) {
 		return !!editor && editor.isFocused && editor.isActive(type, attrs);
 	}
@@ -145,8 +208,8 @@
 			uiFont: 'Outfit',
 			foreground: 'oklch(0.24 0.03 258)',
 			background: 'oklch(0.98 0.01 95)',
-			panel: 'oklch(0.995 0.005 95)',
-			sidebar: 'oklch(0.96 0.015 95)',
+			panel: 'oklch(0.995 0.005 95 / 0.82)',
+			sidebar: 'oklch(0.96 0.015 95 / 0.86)',
 			accent: 'oklch(0.62 0.16 48)',
 			gradientFrom: 'oklch(0.99 0.015 95)',
 			gradientTo: 'oklch(0.95 0.02 75)'
@@ -205,6 +268,287 @@
 		{ value: 'Maple Mono', label: 'Maple Mono' }
 	];
 
+	const categoryOptions = $derived.by(() => {
+		const categories = Array.from(new Set(docs.map((doc) => doc.category).filter(Boolean)));
+		return categories.length ? categories : ['团队工作区', '个人笔记'];
+	});
+
+	const folderOptionsBySpace = $derived.by(() => {
+		const map = {
+			'Amnesia 共享文章': [] as string[],
+			'团队工作区': [] as string[],
+			'个人笔记': [] as string[]
+		};
+
+		for (const doc of docs) {
+			if (doc.space_type === 'global' && doc.category !== 'Amnesia 共享文章') {
+				map['Amnesia 共享文章'].push(doc.category);
+			}
+			if (doc.space_type === 'team' && doc.category !== '团队工作区') {
+				map['团队工作区'].push(doc.category);
+			}
+			if (doc.space_type === 'private' && doc.category !== '个人笔记') {
+				map['个人笔记'].push(doc.category);
+			}
+		}
+
+		return {
+			'Amnesia 共享文章': Array.from(new Set(map['Amnesia 共享文章'])),
+			'团队工作区': Array.from(new Set(map['团队工作区'])),
+			'个人笔记': Array.from(new Set(map['个人笔记']))
+		};
+	});
+
+	function getDocSpaceTypeByCategory(category: string): DocSpaceType {
+		if (category === 'Amnesia 共享文章') return 'global';
+		if (category === '团队工作区') return 'team';
+		return 'private';
+	}
+
+	function getEffectiveCategory(spaceCategory: string, folderName: string) {
+		const trimmedFolder = folderName.trim();
+		return trimmedFolder || spaceCategory;
+	}
+
+	function getSpaceLabel(doc: DocRecord) {
+		if (doc.space_type === 'global') return '全局';
+		if (doc.space_type === 'team') return '团队';
+		return '私有';
+	}
+
+	function getSpaceEmoji(spaceType: DocSpaceType | undefined) {
+		if (spaceType === 'global') return '🌍';
+		if (spaceType === 'team') return '👥';
+		return '🔒';
+	}
+
+	function shouldEncryptDoc(doc: DocRecord) {
+		return doc.space_type === 'private';
+	}
+
+	function isEncryptedPayload(value: string): value is string {
+		return value.trim().startsWith('{') && value.includes('"amnesia-encrypted-doc"');
+	}
+
+	function parseEncryptedPayload(value: string): EncryptedDocPayload | null {
+		if (!isEncryptedPayload(value)) return null;
+		try {
+			const parsed = JSON.parse(value) as EncryptedDocPayload;
+			if (parsed?.type !== 'amnesia-encrypted-doc' || !parsed.iv || !parsed.cipherText) return null;
+			return parsed;
+		} catch {
+			return null;
+		}
+	}
+
+	async function buildInitialDocContent(spaceType: DocSpaceType) {
+		if (spaceType !== 'private') {
+			return {
+				content: '<p></p>',
+				isEncrypted: false,
+				encryptionVersion: 1
+			};
+		}
+
+		const encryptionKey = userState.session?.user?.docEncryptionKey;
+		if (!encryptionKey) {
+			throw new Error('私有文档需要先完成加密初始化');
+		}
+
+		const encrypted = await encryptDocumentContent('<p></p>', encryptionKey);
+		return {
+			content: JSON.stringify({
+				type: 'amnesia-encrypted-doc',
+				version: encrypted.version,
+				iv: encrypted.iv,
+				cipherText: encrypted.cipherText
+			} satisfies EncryptedDocPayload),
+			isEncrypted: true,
+			encryptionVersion: encrypted.version
+		};
+	}
+
+	async function serializeDocContent(doc: DocRecord) {
+		if (!shouldEncryptDoc(doc)) {
+			return {
+				content: doc.content,
+				isEncrypted: false,
+				encryptionVersion: 1
+			};
+		}
+
+		const encryptionKey = userState.session?.user?.docEncryptionKey;
+		if (!encryptionKey) {
+			throw new Error('缺少文档加密密钥，请重新登录后重试');
+		}
+
+		const encrypted = await encryptDocumentContent(doc.content, encryptionKey);
+		return {
+			content: JSON.stringify({
+				type: 'amnesia-encrypted-doc',
+				version: encrypted.version,
+				iv: encrypted.iv,
+				cipherText: encrypted.cipherText
+			} satisfies EncryptedDocPayload),
+			isEncrypted: true,
+			encryptionVersion: encrypted.version
+		};
+	}
+
+	async function hydrateDocFromDatabase(doc: DocRecord) {
+		if (!doc.is_encrypted) return doc;
+		const payload = parseEncryptedPayload(doc.content);
+		if (!payload) {
+			return {
+				...doc,
+				content: '<p>加密内容格式异常，无法读取。</p>'
+			};
+		}
+
+		const encryptionKey = userState.session?.user?.docEncryptionKey;
+		if (!encryptionKey) {
+			return {
+				...doc,
+				content: '<p>缺少文档加密密钥，请重新登录后查看此私有文档。</p>'
+			};
+		}
+
+		try {
+			const plainText = await decryptDocumentContent(payload.cipherText, payload.iv, encryptionKey);
+			return {
+				...doc,
+				content: plainText
+			};
+		} catch {
+			return {
+				...doc,
+				content: '<p>文档解密失败，当前密钥可能与创建时不一致。</p>'
+			};
+		}
+	}
+
+	async function loadTeamsForCurrentUser() {
+		const currentUserId = userState.session?.user?.id;
+		if (!currentUserId) return;
+		const memberships = await listUserTeams(String(currentUserId));
+		const previousTeamId = currentTeamId;
+		teams = memberships.map((item) => ({
+			...item.amnesia_teams,
+			memberRole: item.role
+		}));
+		currentTeamId =
+			teams.find((team) => team.id === previousTeamId)?.id ??
+			teams[0]?.id ??
+			null;
+		if (currentTeamId) {
+			teamInvites = await listTeamInvites(currentTeamId);
+		} else {
+			teamInvites = [];
+		}
+	}
+
+	async function refreshDocs(preserveActiveDocId?: number) {
+		const currentUserId = userState.session?.user?.id;
+		if (!currentUserId) return;
+		const data = await listAccessibleDocs(currentUserId);
+		docs = await Promise.all(data.map((doc) => hydrateDocFromDatabase(doc)));
+
+		if (docs.length === 0) {
+			activeDocIndex = 0;
+			return;
+		}
+
+		const nextIndex =
+			preserveActiveDocId != null
+				? docs.findIndex((doc) => doc.id === preserveActiveDocId)
+				: activeDocIndex;
+		activeDocIndex = nextIndex >= 0 ? nextIndex : 0;
+
+		const currentDoc = docs[activeDocIndex];
+		if (currentDoc) {
+			if (titleNode) titleNode.innerText = currentDoc.title;
+			if (editor) {
+				editor.commands.setContent(currentDoc.content, { emitUpdate: false });
+				syncActiveFormattingState();
+			}
+			syncMarkdownFromHtml(currentDoc.content);
+		}
+	}
+
+	async function handleCreateTeam() {
+		const currentUserId = userState.session?.user?.id;
+		if (!currentUserId || !newTeamName.trim() || !newTeamSlug.trim()) {
+			toast.warning('请填写团队名称与 slug');
+			return;
+		}
+		try {
+			const team = await createTeam({
+				name: newTeamName.trim(),
+				slug: newTeamSlug.trim(),
+				ownerUserId: String(currentUserId)
+			});
+			teams = [...teams, { ...team, memberRole: 'owner' }];
+			currentTeamId = team.id;
+			newTeamName = '';
+			newTeamSlug = '';
+			showTeamWorkspaceModal = false;
+			await refreshDocs();
+			toast.success('团队已创建');
+		} catch (error: any) {
+			toast.error(`创建团队失败: ${error?.message ?? '未知错误'}`);
+		}
+	}
+
+	async function handleCreateInvite() {
+		const currentUserId = userState.session?.user?.id;
+		if (!currentUserId || !currentTeamId) {
+			toast.warning('请先选择一个团队');
+			return;
+		}
+		try {
+			const invite = await createTeamInvite({
+				teamId: currentTeamId,
+				createdByUserId: currentUserId
+			});
+			teamInvites = [invite, ...teamInvites];
+			await navigator.clipboard.writeText(invite.token);
+			toast.success('邀请令牌已生成并复制');
+		} catch (error: any) {
+			toast.error(`生成邀请失败: ${error?.message ?? '未知错误'}`);
+		}
+	}
+
+	async function handleAcceptInvite() {
+		const currentUserId = userState.session?.user?.id;
+		if (!currentUserId || !inviteTokenInput.trim()) {
+			toast.warning('请输入邀请令牌');
+			return;
+		}
+		try {
+			const result = await acceptTeamInvite(inviteTokenInput.trim(), currentUserId);
+			if (!result.success) {
+				toast.error(result.message);
+				return;
+			}
+			inviteTokenInput = '';
+			await loadTeamsForCurrentUser();
+			await refreshDocs();
+			toast.success(result.message);
+		} catch (error: any) {
+			toast.error(`加入团队失败: ${error?.message ?? '未知错误'}`);
+		}
+	}
+
+	async function handleCurrentTeamChange(nextTeamId: string | number | null) {
+		currentTeamId = nextTeamId;
+		if (currentTeamId) {
+			teamInvites = await listTeamInvites(currentTeamId);
+		} else {
+			teamInvites = [];
+		}
+		await refreshDocs();
+	}
+
 	function applyTheme() {
 		if (typeof document === 'undefined') return;
 		const config = themeOptions.find((option) => option.name === theme) ?? themeOptions[0];
@@ -225,6 +569,20 @@
 		root.style.setProperty('--dashboard-doc-font', docFontFamily || 'Noto Sans SC');
 		root.style.setProperty('--dashboard-doc-size', `${docFontSize}px`);
 		root.style.setProperty('--app-ui-font', globalUiFont || config.uiFont);
+		if (editor) {
+			editor.setOptions({
+				editorProps: {
+					attributes: {
+						class: 'tiptap',
+						style: `--dashboard-doc-font:${docFontFamily}; --dashboard-doc-size:${docFontSize}px;`
+					}
+				}
+			});
+		}
+		if (markdownEditorNode) {
+			markdownEditorNode.style.setProperty('--dashboard-doc-font', docFontFamily || 'Noto Sans SC');
+			markdownEditorNode.style.setProperty('--dashboard-doc-size', `${docFontSize}px`);
+		}
 	}
 
 	function persistDashboardSettings() {
@@ -305,14 +663,51 @@
 	async function renameActiveDoc() {
 		const currentDoc = docs[activeDocIndex];
 		if (!currentDoc) return;
-		const nextTitle = prompt('输入新的文档标题', currentDoc.title)?.trim();
-		if (!nextTitle || nextTitle === currentDoc.title) return;
+		renameInput = currentDoc.title;
+		closeDocMenu();
+		showRenameModal = true;
+	}
+
+	async function confirmRenameDoc() {
+		const currentDoc = docs[activeDocIndex];
+		const nextTitle = renameInput.trim();
+		if (!currentDoc || !nextTitle || nextTitle === currentDoc.title) {
+			showRenameModal = false;
+			return;
+		}
 		currentDoc.title = nextTitle;
 		if (titleNode) {
 			titleNode.innerText = nextTitle;
 		}
+		showRenameModal = false;
 		activeDocMenuId = null;
 		triggerAutoSave();
+	}
+
+	function animateDocMenuIn() {
+		if (!docMenuNode) return;
+		animate(docMenuNode, {
+			opacity: [0, 1],
+			translateY: [-10, 0],
+			scale: [0.96, 1],
+			duration: 220,
+			ease: 'outExpo'
+		});
+
+		const items = Array.from(docMenuNode.querySelectorAll('.doc-menu-item'));
+		if (items.length > 0) {
+			animate(items, {
+				opacity: [0, 1],
+				translateX: [-10, 0],
+				delay: (_el: Element, index: number) => 40 + index * 24,
+				duration: 220,
+				ease: 'outExpo'
+			});
+		}
+	}
+
+	function closeDocMenu() {
+		activeDocMenuId = null;
 	}
 
 	function openDocMenu(id: number) {
@@ -324,37 +719,146 @@
 		const rect = target.getBoundingClientRect();
 		docMenuPosition = {
 			top: rect.bottom + 6,
-			left: Math.max(12, rect.right - 168)
+			left: Math.max(12, rect.right - 196)
 		};
 		activeDocMenuId = activeDocMenuId === id ? null : id;
+		animate(target, {
+			scale: [1, 1.12, 1],
+			rotate: [0, -8, 0],
+			duration: 320,
+			ease: 'outElastic(1, 0.7)'
+		});
+		requestAnimationFrame(() => {
+			animateDocMenuIn();
+		});
 	}
 
 	async function duplicateActiveDoc() {
 		const currentDoc = docs[activeDocIndex];
 		if (!currentDoc) return;
-		const payload = {
-			emoji: currentDoc.emoji,
-			title: `${currentDoc.title} 副本`,
-			category: currentDoc.category,
-			content: currentDoc.content
-		};
-		const { data, error } = await supabase.from('amnesia_docs').insert(payload).select().single();
-		if (error || !data) {
+		closeDocMenu();
+		try {
+			const serialized = await serializeDocContent(currentDoc);
+			const data = await createSpaceDoc({
+				title: `${currentDoc.title} 副本`,
+				emoji: currentDoc.emoji,
+				category: currentDoc.category,
+				content: serialized.content,
+				author: currentDoc.author || userState.session?.user?.username || '未知',
+				ownerUserId: currentDoc.owner_user_id ?? userState.session?.user?.id ?? null,
+				teamId: currentDoc.team_id ?? null,
+				spaceType: currentDoc.space_type ?? getDocSpaceTypeByCategory(currentDoc.category),
+				isEncrypted: serialized.isEncrypted,
+				encryptionVersion: serialized.encryptionVersion,
+				settings: currentDoc.settings ?? {}
+			});
+			docs = [...docs, await hydrateDocFromDatabase(data)];
+			activeDocIndex = docs.findIndex((doc) => doc.id === data.id);
+			await tick();
+			handleDocClick(activeDocIndex, data.title);
+			activeDocMenuId = null;
+			toast.success('已创建文档副本');
+		} catch {
 			toast.error('创建副本失败');
+		}
+	}
+
+	async function createNewDoc(category: string) {
+		const currentUser = userState.session?.user;
+		if (!currentUser?.id) {
+			toast.error('缺少用户身份，请重新登录');
 			return;
 		}
-		docs = [...docs, data as DocRecord];
-		activeDocIndex = docs.findIndex((doc) => doc.id === data.id);
-		await tick();
-		handleDocClick(activeDocIndex, data.title);
-		activeDocMenuId = null;
-		toast.success('已创建文档副本');
+		try {
+			const spaceType = getDocSpaceTypeByCategory(category);
+			const effectiveCategory = getEffectiveCategory(category, newDocFolderInput);
+			if (spaceType === 'team' && !currentTeamId) {
+				toast.warning('请先创建或选择一个团队');
+				return;
+			}
+			const initialContent = await buildInitialDocContent(spaceType);
+			const data = await createSpaceDoc({
+				title: newDocTitleInput.trim() || '未命名文章',
+				emoji: '📝',
+				category: effectiveCategory,
+				content: initialContent.content,
+				author: currentUser.username,
+				ownerUserId: currentUser.id,
+				teamId: spaceType === 'team' ? currentTeamId : null,
+				spaceType,
+				isEncrypted: initialContent.isEncrypted,
+				encryptionVersion: initialContent.encryptionVersion,
+				settings: {}
+			});
+			docs = [...docs, await hydrateDocFromDatabase(data)];
+			showCreateDocModal = false;
+			newDocTitleInput = '';
+			newDocFolderInput = '';
+			await refreshDocs(data.id);
+			await tick();
+			toast.success('新文章已创建');
+		} catch {
+			toast.error('创建文章失败');
+		}
+	}
+
+	function openCreateDocModal(category?: string) {
+		newDocTitleInput = '';
+		newDocCategoryInput = category || categoryOptions[0] || '个人笔记';
+		newDocFolderInput = '';
+		showCreateDocModal = true;
+	}
+
+	function openCreateFolderModal() {
+		newFolderInput = '';
+		showCreateFolderModal = true;
+	}
+
+	function confirmCreateFolder() {
+		const name = newFolderInput.trim();
+		if (!name) return;
+		newDocFolderInput = name;
+		showCreateFolderModal = false;
+		toast.success('已为新文章设置子文件夹');
+	}
+
+	async function confirmEncryptionSetup() {
+		const currentUser = userState.session?.user;
+		if (!currentUser?.id || !encryptionPasswordInput.trim()) return;
+		const verifiedUser = await loginWithPassword({
+			username: currentUser.username,
+			password: encryptionPasswordInput.trim()
+		});
+		if (!verifiedUser || verifiedUser.id !== currentUser.id) {
+			toast.error('密码不正确，无法初始化文档加密');
+			return;
+		}
+
+		const keyHint = await deriveDocEncryptionKey(encryptionPasswordInput.trim());
+		await setUserEncryptionReady(currentUser.id, keyHint);
+		userState.setSession({
+			user: {
+				...currentUser,
+				encryptionReady: true,
+				encryptionNoticeAccepted: true,
+				docEncryptionKey: keyHint
+			}
+		});
+		encryptionPasswordInput = '';
+		showEncryptionSetupModal = false;
+		toast.success('文档加密密钥已初始化');
 	}
 
 	async function deleteActiveDoc() {
 		const currentDoc = docs[activeDocIndex];
 		if (!currentDoc) return;
-		if (!confirm(`确定删除「${currentDoc.title}」吗？`)) return;
+		closeDocMenu();
+		showDeleteDocModal = true;
+	}
+
+	async function confirmDeleteActiveDoc() {
+		const currentDoc = docs[activeDocIndex];
+		if (!currentDoc) return;
 
 		const { error } = await supabase.from('amnesia_docs').delete().eq('id', currentDoc.id);
 		if (error) {
@@ -368,6 +872,7 @@
 		if (docs[activeDocIndex]) {
 			handleDocClick(activeDocIndex, docs[activeDocIndex].title);
 		}
+		showDeleteDocModal = false;
 		activeDocMenuId = null;
 		toast.success('文档已删除');
 	}
@@ -382,24 +887,57 @@
 	}
 
 	function insertLink() {
-		if (!editor) return;
-		const href = prompt('输入链接地址');
-		if (!href) return;
-		editor.chain().focus().setLink({ href, target: '_blank' }).run();
+		linkUrlInput = editor?.getAttributes('link')?.href ?? '';
+		linkTextInput = editor?.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ') ?? '';
+		showLinkModal = true;
 	}
 
 	function insertImage() {
-		if (!editor) return;
-		const src = prompt('输入图片 URL');
-		if (!src) return;
-		editor.chain().focus().setImage({ src, alt: 'image' }).run();
+		imageUrlInput = '';
+		showImageModal = true;
 	}
 
 	function insertSafeHtml() {
-		if (!editor) return;
-		const html = prompt('输入要嵌入的 HTML（会先经过安全过滤）');
-		if (!html) return;
-		editor.chain().focus().insertContent(sanitizeHtml(html)).run();
+		htmlEmbedInput = '';
+		showHtmlModal = true;
+	}
+
+	function confirmInsertLink() {
+		if (!editor || !linkUrlInput.trim()) return;
+		const chain = editor.chain().focus();
+		if (editor.state.selection.empty && linkTextInput.trim()) {
+			chain.insertContent(linkTextInput.trim());
+		}
+		chain.extendMarkRange('link').setLink({ href: linkUrlInput.trim(), target: '_blank' }).run();
+		showLinkModal = false;
+	}
+
+	function confirmInsertImageUrl() {
+		if (!editor || !imageUrlInput.trim()) return;
+		editor.chain().focus().setImage({ src: imageUrlInput.trim(), alt: 'image' }).run();
+		showImageModal = false;
+	}
+
+	function confirmInsertSafeHtml() {
+		if (!editor || !htmlEmbedInput.trim()) return;
+		editor.chain().focus().insertContent(sanitizeHtml(htmlEmbedInput)).run();
+		showHtmlModal = false;
+	}
+
+	async function handleImageFileUpload(file: File) {
+		if (!file.type.startsWith('image/')) {
+			toast.error('只能上传图片文件');
+			return;
+		}
+		const reader = new FileReader();
+		reader.onload = () => {
+			const src = reader.result;
+			if (typeof src === 'string' && editor) {
+				editor.chain().focus().setImage({ src, alt: file.name }).run();
+				showImageModal = false;
+			}
+		};
+		reader.readAsDataURL(file);
 	}
 
 	function applyTextColor(color: string) {
@@ -426,24 +964,20 @@
 
 	function toggleTextColorPicker() {
 		const activeColor = getActiveTextColor();
-		if (activeColor) {
+		if (activeColor === selectedTextColor) {
 			resetTextColor();
-			showTextColorModal = false;
 			return;
 		}
-		showTextColorModal = !showTextColorModal;
-		if (showTextColorModal) showHighlightColorModal = false;
+		applyTextColor(selectedTextColor || '#111827');
 	}
 
 	function toggleHighlightColorPicker() {
 		const activeColor = getActiveHighlightColor();
-		if (activeColor) {
+		if (activeColor === selectedHighlightColor) {
 			resetHighlightColor();
-			showHighlightColorModal = false;
 			return;
 		}
-		showHighlightColorModal = !showHighlightColorModal;
-		if (showHighlightColorModal) showTextColorModal = false;
+		applyHighlightColor(selectedHighlightColor || '#fef08a');
 	}
 
 	function syncActiveFormattingState() {
@@ -551,6 +1085,7 @@
 	});
 
 	// 树形折叠状态
+	let globalArticlesOpen = $state(true);
 	let teamWorkspaceOpen = $state(true);
 	let personalNotesOpen = $state(true);
 
@@ -588,15 +1123,21 @@
 	}
 
 	async function handleDeleteUser(username: string) {
-		if (confirm(`确定要删除用户 "${username}" 吗？`)) {
-			const res = await deleteUser(username);
-			if (res.success) {
-				toast.success(res.message);
-				await refreshUsers();
-			} else {
-				toast.error(res.message);
-			}
+		pendingDeleteUsername = username;
+		showDeleteUserModal = true;
+	}
+
+	async function confirmDeleteUser() {
+		if (!pendingDeleteUsername) return;
+		const res = await deleteUser(pendingDeleteUsername);
+		if (res.success) {
+			toast.success(res.message);
+			await refreshUsers();
+		} else {
+			toast.error(res.message);
 		}
+		pendingDeleteUsername = '';
+		showDeleteUserModal = false;
 	}
 
 	// 触发云端自动防抖同步
@@ -607,33 +1148,45 @@
 			const currentDoc = docs[activeDocIndex];
 			if (!currentDoc) return;
 
-			const { error } = await supabase
-				.from('amnesia_docs')
-				.update({
+			try {
+				const serialized = await serializeDocContent(currentDoc);
+				await updateDoc({
+					id: currentDoc.id,
 					title: currentDoc.title,
-					content: currentDoc.content
-				})
-				.eq('id', currentDoc.id);
-
-			if (error) {
+					content: serialized.content,
+					emoji: currentDoc.emoji,
+					category: currentDoc.category,
+					settings: currentDoc.settings,
+					isEncrypted: serialized.isEncrypted,
+					encryptionVersion: serialized.encryptionVersion
+				});
+			} catch (error) {
 				console.error('Failed to sync doc to Supabase:', error);
 				syncStatus = 'idle';
 				toast.error('数据同步失败，请检查网络');
-			} else {
-				syncStatus = 'saved';
+				return;
 			}
+
+			syncStatus = 'saved';
 		}, 1000);
 	}
 
 	function syncMarkdownFromHtml(html: string) {
-		markdownContent = html;
+		const temp = document.createElement('div');
+		temp.innerHTML = html;
+		temp.querySelectorAll('[style*="color"], mark[style], span[style]').forEach((node) => {
+			if (!(node instanceof HTMLElement)) return;
+			node.dataset.inlineStyled = 'true';
+		});
+		markdownContent = turndownService.turndown(temp.innerHTML).trim();
 		markdownPreviewHtml = html;
 	}
 
 	async function applyMarkdownToEditor(markdown: string) {
 		if (!editor || !docs[activeDocIndex]) return;
 
-		editor.commands.setContent(markdown, { emitUpdate: false });
+		const parsed = await marked.parse(markdown);
+		editor.commands.setContent(parsed, { emitUpdate: false });
 		docs[activeDocIndex].content = editor.getHTML();
 		markdownPreviewHtml = docs[activeDocIndex].content;
 		syncActiveFormattingState();
@@ -841,19 +1394,24 @@
 			goto('/login');
 			return;
 		}
+		if (!userState.session.user.encryptionReady) {
+			showEncryptionSetupModal = true;
+		}
 
 		// 1. 从 Supabase 拉取真正的文档
-		const { data, error } = await supabase
-			.from('amnesia_docs')
-			.select('*')
-			.order('id');
-
-		if (error) {
+		const currentUserId = userState.session?.user?.id;
+		if (!currentUserId) {
+			toast.error('缺少用户身份，请重新登录');
+			goto('/login');
+			return;
+		}
+		try {
+			await loadTeamsForCurrentUser();
+			await refreshDocs();
+			await tick();
+		} catch (error) {
 			toast.error('拉取云端文档失败，请检查网络');
 			console.error(error);
-		} else if (data) {
-			docs = data;
-			await tick();
 		}
 
 		// 2. 初始化 Tiptap 编辑器
@@ -986,15 +1544,6 @@
 					快速检索
 				</button>
 
-				<button
-					type="button"
-					onclick={() => toast.info('⚙️ 设置服务正在建设中...')}
-					class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs font-medium cursor-pointer"
-				>
-					<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" class="opacity-60"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 14a2 2 0 1 0 0-4a2 2 0 0 0 0 4"/><path d="M14.2 17.95a8.95 8.95 0 0 0 1.95-1.95m.1-5.1a8.95 8.95 0 0 0-1.95-1.95m-5.1-.1A8.95 8.95 0 0 0 7.25 11m-.1 5.1A8.95 8.95 0 0 0 9.1 18.05m6-1.1l2.3 2.3m-8.3-2.3l-2.3 2.3m8.3-8.3l2.3-2.3m-8.3 8.3l-2.3-2.3m2.3-6l-2.3-2.3"/></g></svg>
-					设置与成员
-				</button>
-
 				{#if userState.session?.user?.role === 'root' || userState.session?.user?.role === '管理员'}
 					<button
 						type="button"
@@ -1007,19 +1556,78 @@
 				{/if}
 			</div>
 
+			<!-- 文档大分类 - 全局文章 -->
+			<div class="space-y-1">
+				<div class="dashboard-folder-header">
+					<button
+						type="button"
+						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
+						onclick={() => { globalArticlesOpen = !globalArticlesOpen; }}
+					>
+						<span>🌍 全局文章</span>
+						<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {globalArticlesOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
+					</button>
+					<button type="button" class="dashboard-folder-add-btn" title="创建全局文章" onclick={() => openCreateDocModal('Amnesia 共享文章')}>+</button>
+				</div>
+
+				{#if globalArticlesOpen}
+					<div class="space-y-0.5 pl-1">
+						{#each docs.filter(d => d.space_type === 'global') as doc}
+							{@const index = docs.findIndex(d => d.id === doc.id)}
+							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
+								<button
+									type="button"
+									class="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-[12px] font-semibold cursor-pointer truncate"
+									onclick={() => handleDocClick(index, doc.title)}
+								>
+									<span>{doc.emoji}</span>
+									<span class="truncate">{doc.title}</span>
+									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
+								</button>
+								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>⋯</button>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
 			<!-- 文档大分类 - 团队工作区 -->
 			<div class="space-y-1">
-				<button
-					type="button"
-					class="dashboard-muted dashboard-sidebar-section w-full flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
-					onclick={() => { teamWorkspaceOpen = !teamWorkspaceOpen; }}
-				>
-					<span>👥 团队工作区</span>
-					<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {teamWorkspaceOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
-				</button>
+				<div class="dashboard-folder-header">
+					<button
+						type="button"
+						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
+						onclick={() => { teamWorkspaceOpen = !teamWorkspaceOpen; }}
+					>
+						<span>👥 团队工作区</span>
+						<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {teamWorkspaceOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
+					</button>
+					<div class="flex items-center gap-1">
+						<button type="button" class="dashboard-folder-add-btn" title="管理团队空间" onclick={() => showTeamWorkspaceModal = true}>⚙</button>
+						<button type="button" class="dashboard-folder-add-btn" title="在团队工作区添加文章" onclick={() => openCreateDocModal('团队工作区')}>+</button>
+					</div>
+				</div>
 
 				{#if teamWorkspaceOpen}
-					<div class="space-y-0.5 pl-1">
+					<div class="space-y-2 pl-1">
+						{#if teams.length > 0}
+							<div class="dashboard-team-switcher px-2 py-2 rounded-xl dashboard-sidebar-card">
+								<div class="dashboard-section-label">当前团队</div>
+								<select class="dashboard-select mt-2" bind:value={currentTeamId} onchange={(e) => handleCurrentTeamChange((e.currentTarget as HTMLSelectElement).value)}>
+									{#each teams as team}
+										<option value={team.id}>{team.name} · {team.memberRole}</option>
+									{/each}
+								</select>
+								<div class="mt-2 text-[11px] dashboard-muted">
+									查看与编辑团队基础信息
+								</div>
+								<button type="button" class="dashboard-btn dashboard-btn-subtle w-full justify-center mt-2" onclick={() => showTeamWorkspaceModal = true}>
+									打开团队信息
+								</button>
+							</div>
+						{:else}
+							<div class="px-2 py-1 text-[11px] dashboard-muted">暂无团队，请先创建或加入团队</div>
+						{/if}
 						{#each docs.filter(d => d.category === '团队工作区') as doc}
 							{@const index = docs.findIndex(d => d.id === doc.id)}
 							<div class="dashboard-doc-row dashboard-sidebar-doc relative flex items-center gap-1 pr-1 rounded-lg transition-all duration-200 {activeDocIndex === index ? 'is-active font-bold' : ''}">
@@ -1030,6 +1638,7 @@
 								>
 									<span>{doc.emoji}</span>
 									<span class="truncate">{doc.title}</span>
+									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
 								</button>
 								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>⋯</button>
 							</div>
@@ -1040,14 +1649,17 @@
 
 			<!-- 文档大分类 - 个人笔记 -->
 			<div class="space-y-1">
-				<button
-					type="button"
-					class="dashboard-muted dashboard-sidebar-section w-full flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
-					onclick={() => { personalNotesOpen = !personalNotesOpen; }}
-				>
-					<span>📝 个人笔记</span>
-					<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {personalNotesOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
-				</button>
+				<div class="dashboard-folder-header">
+					<button
+						type="button"
+						class="dashboard-muted dashboard-sidebar-section flex-1 flex items-center justify-between px-2 py-0.5 text-[10px] font-bold tracking-wider cursor-pointer"
+						onclick={() => { personalNotesOpen = !personalNotesOpen; }}
+					>
+						<span>📝 个人笔记</span>
+						<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" class="transition-transform duration-200 {personalNotesOpen ? 'rotate-90' : ''}"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18l6-6l-6-6"/></svg>
+					</button>
+					<button type="button" class="dashboard-folder-add-btn" title="在个人笔记添加文章" onclick={() => openCreateDocModal('个人笔记')}>+</button>
+				</div>
 
 				{#if personalNotesOpen}
 					<div class="space-y-0.5 pl-1">
@@ -1061,6 +1673,7 @@
 								>
 									<span>{doc.emoji}</span>
 									<span class="truncate">{doc.title}</span>
+									<span class="dashboard-space-pill">{getSpaceLabel(doc)}</span>
 								</button>
 								<button id={`doc-menu-trigger-${doc.id}`} type="button" class="dashboard-icon-btn" onclick={() => openDocMenu(doc.id)}>⋯</button>
 							</div>
@@ -1073,6 +1686,14 @@
 
 		<!-- 侧边栏底部操作区 -->
 		<div class="dashboard-sidebar-footer p-2.5 space-y-1">
+			<button
+				type="button"
+				class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 p-2 rounded-lg text-xs font-bold cursor-pointer transition-all duration-200"
+				onclick={() => openCreateDocModal()}
+			>
+				<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m-7-7h14"/></svg>
+				拉一坨大的
+			</button>
 			<button
 				type="button"
 				class="dashboard-list-row dashboard-sidebar-entry dashboard-muted w-full flex items-center gap-2 p-2 rounded-lg text-xs font-bold cursor-pointer transition-all duration-200"
@@ -1128,19 +1749,21 @@
 			<!-- 科幻淡雅的线性渐变 -->
 			<div class="absolute inset-0 bg-gradient-to-tr from-black/20 via-transparent to-white/10"></div>
 			<div class="absolute bottom-4 right-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-all duration-300">
-				<button type="button" class="dashboard-overlay-btn">🎨 更改封面</button>
-				<button type="button" class="dashboard-overlay-btn">📍 调整位置</button>
+				<button type="button" class="dashboard-overlay-btn">更改封面</button>
 			</div>
 		</div>
 
 		<!-- 动态内容骨架屏与 Tiptap 富文本核心画布 -->
 		{#if docs.length === 0}
-			<div class="max-w-3xl w-full px-12 pt-24 space-y-6">
-				<div class="skeleton h-20 w-20 rounded-2xl"></div>
-				<div class="skeleton h-12 w-3/4"></div>
-				<div class="skeleton h-6 w-full mt-12"></div>
-				<div class="skeleton h-6 w-5/6"></div>
-				<div class="skeleton h-6 w-4/5"></div>
+			<div class="mx-auto flex h-full max-w-3xl flex-col items-center justify-center px-12 text-center">
+				<div class="dashboard-surface flex h-20 w-20 items-center justify-center rounded-3xl text-4xl">🗂️</div>
+				<h2 class="mt-6 text-2xl font-bold dashboard-strong">这里还没有文章</h2>
+				<p class="mt-3 max-w-xl dashboard-muted">
+				你先看看左边都有啥呢。
+				</p>
+				<button type="button" class="dashboard-btn dashboard-btn-primary mt-6" onclick={() => openCreateDocModal()}>
+					拉一坨大的
+				</button>
 			</div>
 		{:else}
 			<div class="mx-auto w-full max-w-4xl -translate-y-10 pb-16 relative" style={`padding-left:${pagePaddingX}px; padding-right:${pagePaddingX}px;`}>
@@ -1175,6 +1798,16 @@
 					class="editor-shell"
 					onmousemove={(e) => updateBlockHandleFromPoint(e.clientX, e.clientY)}
 					onmouseleave={releaseBlockHandle}
+					ondragover={(e) => {
+						e.preventDefault();
+					}}
+					ondrop={(e) => {
+						e.preventDefault();
+						const file = e.dataTransfer?.files?.[0];
+						if (file) {
+							handleImageFileUpload(file);
+						}
+					}}
 				>
 					<div
 						bind:this={editorNode}
@@ -1356,62 +1989,32 @@
 
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
 
-							<div
-								class="toolbar-popover-wrap"
-								onmouseenter={() => {
-									showTextColorModal = true;
-									showHighlightColorModal = false;
-								}}
-								onmouseleave={() => showTextColorModal = false}
-							>
+							<div class="relative">
 								<button
 									type="button"
 									class="dashboard-toolbar-btn font-black {getActiveTextColor() ? 'is-active' : ''}"
 									onclick={toggleTextColorPicker}
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										showTextColorModal = true;
+										showHighlightColorModal = false;
+									}}
 									title="文本颜色"
 								>A</button>
-								{#if showTextColorModal}
-									<div class="toolbar-color-popover">
-										<div class="color-preview h-10" style={`background:${selectedTextColor || '#111827'};`}></div>
-										<div class="grid grid-cols-6 gap-2">
-											{#each ['oklch(0.22 0.03 258)', 'oklch(0.32 0.12 260)', 'oklch(0.55 0.18 25)', 'oklch(0.62 0.17 145)', 'oklch(0.68 0.15 330)', 'oklch(0.8 0.08 95)', 'oklch(0.92 0.01 250)', 'oklch(0.45 0.2 15)', 'oklch(0.35 0.11 220)', 'oklch(0.72 0.16 80)', 'oklch(0.58 0.22 345)', 'oklch(0.28 0.02 260)'] as color}
-												<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedTextColor = color; applyTextColor(color); }} aria-label={`文本颜色 ${color}`} title={`文本颜色 ${color}`}></button>
-											{/each}
-										</div>
-										<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={textColorControls.l} oninput={applyCurrentTextColor} class="range theme-range" /></label>
-										<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={textColorControls.c} oninput={applyCurrentTextColor} class="range theme-range hue-range" /></label>
-										<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={textColorControls.h} oninput={applyCurrentTextColor} class="range theme-range rainbow-range" /></label>
-									</div>
-								{/if}
 							</div>
 
-							<div
-								class="toolbar-popover-wrap"
-								onmouseenter={() => {
-									showHighlightColorModal = true;
-									showTextColorModal = false;
-								}}
-								onmouseleave={() => showHighlightColorModal = false}
-							>
+							<div class="relative">
 								<button
 									type="button"
 									class="dashboard-toolbar-btn font-black {getActiveHighlightColor() ? 'is-active' : ''}"
 									onclick={toggleHighlightColorPicker}
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										showHighlightColorModal = true;
+										showTextColorModal = false;
+									}}
 									title="文字背景色"
 								><span class="dashboard-highlight-chip">A</span></button>
-								{#if showHighlightColorModal}
-									<div class="toolbar-color-popover">
-										<div class="color-preview h-10" style={`background:${selectedHighlightColor || '#fef08a'};`}></div>
-										<div class="grid grid-cols-6 gap-2">
-											{#each ['oklch(0.96 0.08 95)', 'oklch(0.95 0.09 50)', 'oklch(0.92 0.08 145)', 'oklch(0.93 0.08 250)', 'oklch(0.9 0.11 330)', 'oklch(0.87 0.13 20)', 'oklch(0.84 0.1 80)', 'oklch(0.91 0.06 220)', 'oklch(0.89 0.05 20)', 'oklch(0.97 0.03 260)', 'oklch(0.88 0.12 300)', 'oklch(0.82 0.1 170)'] as color}
-												<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedHighlightColor = color; applyHighlightColor(color); }} aria-label={`背景颜色 ${color}`} title={`背景颜色 ${color}`}></button>
-											{/each}
-										</div>
-										<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={highlightColorControls.l} oninput={applyCurrentHighlightColor} class="range theme-range" /></label>
-										<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={highlightColorControls.c} oninput={applyCurrentHighlightColor} class="range theme-range hue-range" /></label>
-										<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={highlightColorControls.h} oninput={applyCurrentHighlightColor} class="range theme-range rainbow-range" /></label>
-									</div>
-								{/if}
 							</div>
 
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
@@ -1451,11 +2054,51 @@
 </div>
 
 {#if activeDocMenuId !== null}
-	<div class="doc-menu doc-menu-floating" style={`top:${docMenuPosition.top}px; left:${docMenuPosition.left}px;`}>
-		<button type="button" onclick={renameActiveDoc}>重命名</button>
-		<button type="button" onclick={duplicateActiveDoc}>复制文章</button>
-		<button type="button" onclick={() => { showPropertiesModal = true; activeDocMenuId = null; }}>属性</button>
-		<button type="button" class="text-error" onclick={deleteActiveDoc}>删除</button>
+	<div class="doc-menu-backdrop" onclick={closeDocMenu}></div>
+	<div
+		bind:this={docMenuNode}
+		class="doc-menu doc-menu-floating"
+		style={`top:${docMenuPosition.top}px; left:${docMenuPosition.left}px;`}
+	>
+		<div class="doc-menu-headerline">
+			<span class="doc-menu-kicker">必须操作你了</span>
+		</div>
+		<button class="doc-menu-item" type="button" onclick={renameActiveDoc}>
+			<span class="doc-menu-icon">✎</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">重命名</span>
+				<span class="doc-menu-desc">修改页面标题</span>
+			</span>
+		</button>
+		<button class="doc-menu-item" type="button" onclick={duplicateActiveDoc}>
+			<span class="doc-menu-icon">⧉</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">克隆</span>
+				<span class="doc-menu-desc">疯狂地生。</span>
+			</span>
+		</button>
+		<button
+			class="doc-menu-item"
+			type="button"
+			onclick={() => {
+				showPropertiesModal = true;
+				closeDocMenu();
+			}}
+		>
+			<span class="doc-menu-icon">◎</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">属性</span>
+				<span class="doc-menu-desc">查看页面元信息</span>
+			</span>
+		</button>
+		<div class="doc-menu-divider"></div>
+		<button type="button" class="doc-menu-item is-danger" onclick={deleteActiveDoc}>
+			<span class="doc-menu-icon">⌫</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">删除</span>
+				<span class="doc-menu-desc">移除此文章</span>
+			</span>
+		</button>
 	</div>
 {/if}
 
@@ -1479,6 +2122,266 @@
 	</div>
 {/if}
 
+{#if showTextColorModal}
+	<div class="dashboard-modal-backdrop" onclick={() => showTextColorModal = false}>
+		<div class="dashboard-modal-box dashboard-modal-medium" onclick={(e) => e.stopPropagation()}>
+			<h3 class="dashboard-modal-title">文本颜色</h3>
+			<div class="dashboard-modal-body">
+				<div class="color-preview h-14" style={`background:${selectedTextColor || '#111827'};`}></div>
+				<div class="grid grid-cols-6 gap-2">
+					{#each ['oklch(0.22 0.03 258)', 'oklch(0.32 0.12 260)', 'oklch(0.55 0.18 25)', 'oklch(0.62 0.17 145)', 'oklch(0.68 0.15 330)', 'oklch(0.8 0.08 95)', 'oklch(0.92 0.01 250)', 'oklch(0.45 0.2 15)', 'oklch(0.35 0.11 220)', 'oklch(0.72 0.16 80)', 'oklch(0.58 0.22 345)', 'oklch(0.28 0.02 260)'] as color}
+						<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedTextColor = color; applyTextColor(color); }} aria-label={`文本颜色 ${color}`} title={`文本颜色 ${color}`}></button>
+					{/each}
+				</div>
+				<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={textColorControls.l} oninput={applyCurrentTextColor} class="range theme-range" /></label>
+				<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={textColorControls.c} oninput={applyCurrentTextColor} class="range theme-range hue-range" /></label>
+				<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={textColorControls.h} oninput={applyCurrentTextColor} class="range theme-range rainbow-range" /></label>
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={resetTextColor}>恢复默认</button>
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showTextColorModal = false}>关闭</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showHighlightColorModal}
+	<div class="dashboard-modal-backdrop" onclick={() => showHighlightColorModal = false}>
+		<div class="dashboard-modal-box dashboard-modal-medium" onclick={(e) => e.stopPropagation()}>
+			<h3 class="dashboard-modal-title">文字背景色</h3>
+			<div class="dashboard-modal-body">
+				<div class="color-preview h-14" style={`background:${selectedHighlightColor || '#fef08a'};`}></div>
+				<div class="grid grid-cols-6 gap-2">
+					{#each ['oklch(0.96 0.08 95)', 'oklch(0.95 0.09 50)', 'oklch(0.92 0.08 145)', 'oklch(0.93 0.08 250)', 'oklch(0.9 0.11 330)', 'oklch(0.87 0.13 20)', 'oklch(0.84 0.1 80)', 'oklch(0.91 0.06 220)', 'oklch(0.89 0.05 20)', 'oklch(0.97 0.03 260)', 'oklch(0.88 0.12 300)', 'oklch(0.82 0.1 170)'] as color}
+						<button type="button" class="preset-swatch" style={`background:${color};`} onclick={() => { selectedHighlightColor = color; applyHighlightColor(color); }} aria-label={`背景颜色 ${color}`} title={`背景颜色 ${color}`}></button>
+					{/each}
+				</div>
+				<label class="color-control"><span>Lightness</span><input type="range" min="0" max="100" bind:value={highlightColorControls.l} oninput={applyCurrentHighlightColor} class="range theme-range" /></label>
+				<label class="color-control"><span>Chroma</span><input type="range" min="0" max="0.37" step="0.005" bind:value={highlightColorControls.c} oninput={applyCurrentHighlightColor} class="range theme-range hue-range" /></label>
+				<label class="color-control"><span>Hue</span><input type="range" min="0" max="360" bind:value={highlightColorControls.h} oninput={applyCurrentHighlightColor} class="range theme-range rainbow-range" /></label>
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={resetHighlightColor}>恢复默认</button>
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showHighlightColorModal = false}>关闭</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showLinkModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box dashboard-modal-medium">
+			<h3 class="dashboard-modal-title">插入超链接</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">链接地址</span>
+				<input bind:value={linkUrlInput} class="dashboard-input" placeholder="https://example.com" />
+			</div>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">链接文本</span>
+				<input bind:value={linkTextInput} class="dashboard-input" placeholder="链接文字" />
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showLinkModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmInsertLink}>插入</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showImageModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box dashboard-modal-medium">
+			<h3 class="dashboard-modal-title">插入图片</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">图片 URL</span>
+				<input bind:value={imageUrlInput} class="dashboard-input" placeholder="https://example.com/image.png" />
+			</div>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">或上传图片文件</span>
+				<label class="dashboard-btn dashboard-btn-subtle justify-center">
+					选择图片
+					<input
+						type="file"
+						accept="image/*"
+						class="hidden"
+						onchange={(e) => {
+							const file = (e.currentTarget as HTMLInputElement).files?.[0];
+							if (file) handleImageFileUpload(file);
+						}}
+					/>
+				</label>
+			</div>
+			<div class="dashboard-helper-text">也支持直接把图片拖进编辑器。</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showImageModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmInsertImageUrl}>插入 URL 图片</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showHtmlModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box dashboard-modal-medium">
+			<h3 class="dashboard-modal-title">插入 HTML</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">HTML 代码</span>
+				<textarea bind:value={htmlEmbedInput} class="dashboard-input dashboard-textarea" rows="8" placeholder="<iframe ...></iframe>"></textarea>
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showHtmlModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmInsertSafeHtml}>插入</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showRenameModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">重命名文章</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">文章标题</span>
+				<input bind:value={renameInput} class="dashboard-input" placeholder="输入新的文章标题" />
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showRenameModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmRenameDoc}>保存</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showDeleteDocModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">删除文章</h3>
+			<div class="dashboard-helper-text">确认删除当前文章？此操作不可撤销。</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showDeleteDocModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-danger" onclick={confirmDeleteActiveDoc}>删除</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showCreateDocModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">添加新文章</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">文章标题</span>
+				<input bind:value={newDocTitleInput} class="dashboard-input" placeholder="未命名文章" />
+			</div>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">文章空间</span>
+				<select bind:value={newDocCategoryInput} class="dashboard-select">
+					<option value="Amnesia 共享文章">🌍 全局文章</option>
+					<option value="团队工作区">👥 团队文章</option>
+					<option value="个人笔记">🔒 私有文章</option>
+				</select>
+			</div>
+			<div class="dashboard-field">
+				<div class="flex items-center justify-between gap-3">
+					<span class="dashboard-field-label">子文件夹</span>
+					<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={openCreateFolderModal}>新建文件夹</button>
+				</div>
+				{#if folderOptionsBySpace[newDocCategoryInput as keyof typeof folderOptionsBySpace].length > 0}
+					<select bind:value={newDocFolderInput} class="dashboard-select mt-2">
+						<option value="">默认分组</option>
+						{#each folderOptionsBySpace[newDocCategoryInput as keyof typeof folderOptionsBySpace] as folder}
+							<option value={folder}>{folder}</option>
+						{/each}
+					</select>
+				{:else}
+					<input bind:value={newDocFolderInput} class="dashboard-input mt-2" placeholder="留空则进入默认分组" />
+				{/if}
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showCreateDocModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={() => createNewDoc(newDocCategoryInput)}>创建</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showCreateFolderModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">添加文件夹</h3>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">文件夹名称</span>
+				<input bind:value={newFolderInput} class="dashboard-input" placeholder="新的文件夹" />
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showCreateFolderModal = false}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmCreateFolder}>创建</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showTeamWorkspaceModal}
+	<div class="dashboard-modal-backdrop" onclick={() => showTeamWorkspaceModal = false}>
+		<div class="dashboard-modal-box dashboard-modal-large" onclick={(e) => e.stopPropagation()}>
+			<div class="dashboard-modal-header">
+				<h3 class="dashboard-modal-title">团队空间</h3>
+				<button type="button" class="dashboard-icon-btn" onclick={() => showTeamWorkspaceModal = false}>✕</button>
+			</div>
+			<div class="dashboard-settings-grid">
+				<div class="space-y-3">
+					<div class="dashboard-section-label">创建团队</div>
+					<input type="text" bind:value={newTeamName} class="dashboard-input" placeholder="团队名称" />
+					<input type="text" bind:value={newTeamSlug} class="dashboard-input" placeholder="团队 slug" />
+					<button type="button" class="dashboard-btn dashboard-btn-primary w-full justify-center" onclick={handleCreateTeam}>
+						创建团队
+					</button>
+				</div>
+				<div class="space-y-3">
+					<div class="dashboard-section-label">管理与加入</div>
+					{#if teams.length > 0}
+						<select class="dashboard-select" bind:value={currentTeamId} onchange={(e) => handleCurrentTeamChange((e.currentTarget as HTMLSelectElement).value)}>
+							{#each teams as team}
+								<option value={team.id}>{team.name} · {team.memberRole}</option>
+							{/each}
+						</select>
+						<button type="button" class="dashboard-btn dashboard-btn-subtle w-full justify-center" onclick={handleCreateInvite}>
+							生成邀请令牌
+						</button>
+						{#if teamInvites.length > 0}
+							<div class="dashboard-helper-text">最近邀请：{teamInvites[0].token}</div>
+						{/if}
+					{:else}
+						<div class="dashboard-helper-text">你还没有加入任何团队。</div>
+					{/if}
+					<input type="text" bind:value={inviteTokenInput} class="dashboard-input" placeholder="输入邀请令牌加入团队" />
+					<button type="button" class="dashboard-btn dashboard-btn-subtle w-full justify-center" onclick={handleAcceptInvite}>
+						加入团队
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showEncryptionSetupModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box dashboard-modal-medium">
+			<h3 class="dashboard-modal-title">初始化文档加密</h3>
+			<div class="dashboard-helper-text">
+				文档在上传前会使用你的密码派生密钥进行加密。此设置只允许初始化一次，之后无法修改，请确认后继续。
+			</div>
+			<div class="dashboard-field">
+				<span class="dashboard-field-label">输入你的登录密码</span>
+				<input type="password" bind:value={encryptionPasswordInput} class="dashboard-input" placeholder="用于派生文档加密密钥" />
+			</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmEncryptionSetup}>确认初始化</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
 
 {#if showPropertiesModal}
 	<div class="dashboard-modal-backdrop">
@@ -1492,6 +2395,19 @@
 			</div>
 			<div class="dashboard-modal-actions">
 				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showPropertiesModal = false}>关闭</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+{#if showDeleteUserModal}
+	<div class="dashboard-modal-backdrop">
+		<div class="dashboard-modal-box">
+			<h3 class="dashboard-modal-title">删除用户</h3>
+			<div class="dashboard-helper-text">确认删除用户 “{pendingDeleteUsername}”？此操作不可撤销。</div>
+			<div class="dashboard-modal-actions">
+				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => { showDeleteUserModal = false; pendingDeleteUsername = ''; }}>取消</button>
+				<button type="button" class="dashboard-btn dashboard-btn-danger" onclick={confirmDeleteUser}>删除</button>
 			</div>
 		</div>
 	</div>
@@ -1880,6 +2796,7 @@
 
 	.dashboard-list-row {
 		color: color-mix(in oklab, var(--dashboard-fg) 96%, transparent);
+		padding-left: 2px;
 		transition: background-color 160ms ease, color 160ms ease;
 	}
 
@@ -1901,6 +2818,7 @@
 
 	.dashboard-doc-row {
 		color: var(--dashboard-fg);
+		padding-left: 2px;
 	}
 
 	.dashboard-doc-row:hover {
@@ -2244,6 +3162,13 @@
 		font-size: 0.8rem;
 		outline: none;
 		transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+	}
+
+	.dashboard-textarea {
+		min-height: 10rem;
+		resize: vertical;
+		font-family: "JetBrains Mono", monospace;
+		line-height: 1.6;
 	}
 
 	.dashboard-input:focus,
@@ -2611,7 +3536,7 @@
 
 	.editor-shell {
 		position: relative;
-		padding: 0.35rem 0 1.25rem 3rem;
+		padding: 0.1rem 0 0.3rem 0.2rem;
 	}
 
 	.editor-toolbar-sticky {
@@ -2680,6 +3605,8 @@
 	.toolbar-popover-wrap {
 		position: relative;
 		display: inline-flex;
+		padding-bottom: 0.85rem;
+		margin-bottom: -0.85rem;
 	}
 
 	.toolbar-color-popover {
@@ -2788,39 +3715,186 @@
 		font-size: 0.82rem;
 	}
 
+	.doc-menu-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 38;
+		background: transparent;
+	}
+
 	.doc-menu {
 		position: absolute;
 		right: 0;
 		top: calc(100% + 0.2rem);
 		z-index: 40;
 		display: flex;
-		width: 10.5rem;
-		max-width: 10.5rem;
+		width: 12rem;
+		max-width: 12rem;
 		flex-direction: column;
-		gap: 0.1rem;
-		border: 1px solid var(--dashboard-border);
-		border-radius: calc(var(--dashboard-radius) * 0.55);
-		background: var(--dashboard-panel);
-		padding: 0.35rem;
-		box-shadow: 0 18px 40px var(--dashboard-shadow-color);
-		backdrop-filter: blur(18px);
+		gap: 0.2rem;
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 10%, transparent);
+		border-radius: calc(var(--dashboard-radius) * 0.6);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in oklab, var(--dashboard-panel) 96%, white 4%),
+				color-mix(in oklab, var(--dashboard-panel) 92%, var(--dashboard-bg))
+			);
+		padding: 0.45rem;
+		box-shadow:
+			0 24px 60px color-mix(in oklab, var(--dashboard-shadow-color) 90%, transparent),
+			inset 0 1px 0 color-mix(in oklab, white 20%, transparent);
+		backdrop-filter: blur(22px) saturate(1.2);
+		transform-origin: top right;
+		overflow: hidden;
 	}
 
 	.doc-menu-floating {
 		position: fixed;
 	}
 
-	.doc-menu button {
-		border: none;
-		background: transparent;
-		padding: 0.55rem 0.7rem;
-		border-radius: 0.7rem;
-		text-align: left;
-		cursor: pointer;
+	.doc-menu-headerline {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding: 0.15rem 0.3rem 0.45rem;
 	}
 
-	.doc-menu button:hover {
+	.doc-menu-kicker {
+		font-size: 0.66rem;
+		font-weight: 900;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--dashboard-soft-fg);
+	}
+
+	.doc-menu-caption {
+		font-size: 0.7rem;
+		color: color-mix(in oklab, var(--dashboard-fg) 38%, transparent);
+	}
+
+	.doc-menu-item {
+		display: flex;
+		width: 100%;
+		align-items: center;
+		gap: 0.6rem;
+		border: 1px solid transparent;
+		border-radius: calc(var(--dashboard-radius) * 0.42);
+		background: transparent;
+		padding: 0.55rem 0.6rem;
+		text-align: left;
+		cursor: pointer;
+		transition:
+			transform 180ms ease,
+			background-color 180ms ease,
+			border-color 180ms ease,
+			box-shadow 180ms ease;
+	}
+
+	.doc-menu-item:hover {
+		transform: translateX(2px);
+		background: color-mix(in oklab, var(--dashboard-hover-bg) 82%, var(--dashboard-panel));
+		border-color: color-mix(in oklab, var(--dashboard-accent) 18%, transparent);
+		box-shadow: inset 0 1px 0 color-mix(in oklab, white 10%, transparent);
+	}
+
+	.doc-menu-icon {
+		display: inline-flex;
+		height: 1.7rem;
+		width: 1.7rem;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+		border-radius: 0.7rem;
+		background: color-mix(in oklab, var(--dashboard-fg) 6%, transparent);
+		color: var(--dashboard-fg);
+		font-size: 0.82rem;
+		font-weight: 800;
+	}
+
+	.doc-menu-copy {
+		display: flex;
+		min-width: 0;
+		flex: 1;
+		flex-direction: column;
+	}
+
+	.doc-menu-title {
+		font-size: 0.8rem;
+		font-weight: 800;
+		line-height: 1.1;
+		color: var(--dashboard-fg);
+	}
+
+	.doc-menu-desc {
+		margin-top: 0.12rem;
+		font-size: 0.68rem;
+		line-height: 1.2;
+		color: var(--dashboard-soft-fg);
+	}
+
+	.doc-menu-divider {
+		margin: 0.15rem 0.25rem;
+		height: 1px;
+		background: color-mix(in oklab, var(--dashboard-fg) 8%, transparent);
+	}
+
+	.doc-menu-item.is-danger .doc-menu-icon {
+		background: color-mix(in oklab, oklch(0.62 0.24 24) 18%, transparent);
+		color: color-mix(in oklab, oklch(0.62 0.24 24) 78%, var(--dashboard-fg));
+	}
+
+	.doc-menu-item.is-danger .doc-menu-title {
+		color: color-mix(in oklab, oklch(0.62 0.24 24) 82%, var(--dashboard-fg));
+	}
+
+	.doc-menu-item.is-danger:hover {
+		background: color-mix(in oklab, oklch(0.62 0.24 24) 10%, var(--dashboard-panel));
+		border-color: color-mix(in oklab, oklch(0.62 0.24 24) 26%, transparent);
+	}
+
+	.dashboard-folder-header {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
+	.dashboard-folder-add-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.35rem;
+		height: 1.35rem;
+		border-radius: 999px;
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--dashboard-soft-fg);
+		font-size: 0.9rem;
+		font-weight: 700;
+		cursor: pointer;
+		transition: all 160ms ease;
+	}
+
+	.dashboard-folder-add-btn:hover {
 		background: var(--dashboard-hover-bg);
+		border-color: var(--dashboard-border);
+		color: var(--dashboard-fg);
+	}
+
+	.dashboard-space-pill {
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 999px;
+		padding: 0.1rem 0.4rem;
+		font-size: 0.62rem;
+		font-weight: 800;
+		letter-spacing: 0.02em;
+		color: var(--dashboard-soft-fg);
+		background: var(--dashboard-soft-bg);
+		border: 1px solid var(--dashboard-border);
 	}
 
 	.page-settings-fab {

@@ -1,6 +1,12 @@
+import type { EntityId, SystemRole } from '$lib/types/domain';
+
 export interface User {
+	id?: EntityId;
 	username: string;
-	role: 'root' | '管理员' | '用户';
+	role: SystemRole;
+	encryptionReady?: boolean;
+	encryptionNoticeAccepted?: boolean;
+	docEncryptionKey?: string;
 }
 
 export interface CustomSession {
