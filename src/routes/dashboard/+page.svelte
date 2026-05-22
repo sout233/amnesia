@@ -3788,14 +3788,14 @@ async function copyPageContent() {
 			<span class="doc-menu-icon">＋</span>
 			<span class="doc-menu-copy">
 				<span class="doc-menu-title">添加文章</span>
-				<span class="doc-menu-desc">在当前空间原地创建一篇新文章</span>
+				<span class="doc-menu-desc">禁止随地大小便</span>
 			</span>
 		</button>
 		<button class="doc-menu-item" type="button" onclick={() => createFolderInSpace(spaceContextMenuCategory)}>
 			<span class="doc-menu-icon">📁</span>
 			<span class="doc-menu-copy">
 				<span class="doc-menu-title">添加文件夹</span>
-				<span class="doc-menu-desc">只输入名字，创建后立即出现在左侧</span>
+				<span class="doc-menu-desc">我的篮子非常大，适合日常的收纳</span>
 			</span>
 		</button>
 		{#if spaceContextMenuFolder}
@@ -3811,7 +3811,7 @@ async function copyPageContent() {
 				<span class="doc-menu-icon">⇄</span>
 				<span class="doc-menu-copy">
 					<span class="doc-menu-title">批量迁移文章</span>
-					<span class="doc-menu-desc">把当前文件夹内文章移到别的文件夹</span>
+					<span class="doc-menu-desc">把当前文件夹内文章移到别的文件夹（NTR？）</span>
 				</span>
 			</button>
 			<button class="doc-menu-item is-danger" type="button" onclick={openDeleteFolderModal}>
@@ -4286,10 +4286,10 @@ async function copyPageContent() {
 				目前的逻辑是：先使用你的登录密码通过本地派生逻辑生成文档密钥，再用 Web Crypto API 的 <strong>AES-GCM</strong> 算法对私有文章内容加密；数据库里保存的是密文、随机 IV 和版本信息，而不是可直接阅读的正文。
 			</div>
 			<div class="dashboard-helper-text">
-				之所以这样做，是因为站长 <strong>sout</strong> 不想在数据库里直接看到其他用户的私人文章内容，所以即使我去翻数据库，也应该尽量只能看到一坨看不懂的密文，而不是你的正文。
+				之所以这样做，是因为我不想在数据库里直接看到其他用户的私人文章内容，所以即使我去翻数据库，也看不到你的正文实际内容。
 			</div>
 			<div class="dashboard-helper-text">
-				这意味着：你的私有文章默认会以“先本地加密、再上传”的方式保存；只有输入正确的登录密码，浏览器才能重新派生出同一把密钥并解密内容。这个初始化只允许设置一次，之后无法修改，请确认你已经理解这个机制。
+				这意味着你的私有文章默认会以“先本地加密、再上传”的方式保存；只有输入正确的登录密码，浏览器才能重新派生出同一把密钥并解密内容。这个初始化只允许设置一次，之后无法修改。你可以随时导出你的文章（以已解密或者加密的形式）。请确认你已经理解这个机制。
 			</div>
 			<div class="dashboard-helper-text">
 				请输入你当前账号的登录密码来确认并生成文档加密密钥。如果以后忘记登录密码，私有文章内容也会随之无法恢复，请务必自行保管好密码。
