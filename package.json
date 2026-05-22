@@ -17,6 +17,7 @@
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
 		"@tailwindcss/typography": "^0.5.19",
 		"@tailwindcss/vite": "^4.2.2",
+		"@types/node": "^25.9.1",
 		"svelte": "^5.55.2",
 		"svelte-check": "^4.4.6",
 		"tailwindcss": "^4.2.2",
@@ -25,7 +26,11 @@
 	},
 	"dependencies": {
 		"@supabase/supabase-js": "^2.106.1",
+		"@tiptap/core": "^3.23.6",
+		"@tiptap/starter-kit": "^3.23.6",
 		"animejs": "^4.4.1",
-		"daisyui": "5.0.0-beta.8"
+		"daisyui": "5.0.0-beta.8",
+		"marked": "^18.0.4",
+		"turndown": "^7.2.4"
 	}
 }

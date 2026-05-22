@@ -3,6 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import NavBar from '$lib/components/NavBar.svelte';
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { userState } from '$lib/userData.svelte';
 	import ToastContainer from '$lib/components/ToastContainer.svelte';
 
@@ -19,10 +20,11 @@
 </svelte:head>
 
 <main class="min-h-screen flex flex-col bg-white text-black">
-	<!-- 顶部留出导航栏高度 -->
-	<NavBar />
-	
-	<div class="flex-1 mt-12.5 flex flex-col">
+	{#if !page.url.pathname.startsWith('/dashboard')}
+		<NavBar />
+	{/if}
+
+	<div class="flex-1 flex flex-col {page.url.pathname.startsWith('/dashboard') ? '' : 'mt-12.5'}">
 		{@render children()}
 	</div>
 
