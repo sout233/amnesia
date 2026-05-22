@@ -84,7 +84,7 @@
 </script>
 
 <svelte:head>
-	<title>Amnesia - 唤醒你的第二大脑</title>
+	<title>Amnesia - 个人知识管理</title>
 </svelte:head>
 
 <div class="relative min-h-[92vh] flex flex-col justify-between items-center px-4 overflow-hidden select-none">
@@ -122,7 +122,7 @@
 			</AniButton>
 		{:else}
 			<AniButton
-				text="进入您的神经工作区"
+				text="进入工作区"
 				href="/dashboard"
 				className="btn btn-neutral btn-lg rounded-full font-bold px-8 shadow-xl flex items-center gap-2 cursor-pointer"
 			>
