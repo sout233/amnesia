@@ -11,18 +11,26 @@
 	import { loginWithPassword, setUserEncryptionReady, updateUserAvatar } from '$lib/auth/authService';
 	import { acceptTeamInvite, createTeam, createTeamInvite, listTeamInvites, listUserTeams } from '$lib/teams/teamService';
 	import type { DocSpaceType, TeamInviteRecord, TeamRecord } from '$lib/types/domain';
-	import { Editor } from '@tiptap/core';
+	import { Editor, Node as TiptapNode, mergeAttributes } from '@tiptap/core';
 	import StarterKit from '@tiptap/starter-kit';
 	import Link from '@tiptap/extension-link';
 	import Image from '@tiptap/extension-image';
 	import { TextStyle } from '@tiptap/extension-text-style';
 	import Color from '@tiptap/extension-color';
 	import Highlight from '@tiptap/extension-highlight';
+	import TaskList from '@tiptap/extension-task-list';
+	import TaskItem from '@tiptap/extension-task-item';
+	import Mention from '@tiptap/extension-mention';
+	import { Table } from '@tiptap/extension-table';
+	import TableRow from '@tiptap/extension-table-row';
+	import TableHeader from '@tiptap/extension-table-header';
+	import TableCell from '@tiptap/extension-table-cell';
 	import { marked } from 'marked';
 	import TurndownService from 'turndown';
 	import DOMPurify from 'dompurify';
 	import ThemedSelect, { type ThemedSelectOption } from '$lib/components/ThemedSelect.svelte';
 	import { EditorState } from '@codemirror/state';
+	import { history, redo as codeMirrorRedo, redoSelection, undo as codeMirrorUndo, undoSelection } from '@codemirror/commands';
 	import {
 		EditorView,
 		lineNumbers,
@@ -31,6 +39,62 @@
 		scrollPastEnd
 	} from '@codemirror/view';
 	import { markdown as markdownLanguage } from '@codemirror/lang-markdown';
+
+	const RawHtmlEmbed = TiptapNode.create({
+		name: 'rawHtmlEmbed',
+		group: 'block',
+		atom: true,
+		draggable: true,
+		selectable: true,
+		isolating: true,
+
+		addAttributes() {
+			return {
+				html: {
+					default: ''
+				}
+			};
+		},
+
+		parseHTML() {
+			return [
+				{
+					tag: 'div[data-html-embed-block]',
+					getAttrs: (element) => ({
+						html: element instanceof HTMLElement ? element.getAttribute('data-raw-html') ?? '' : ''
+					})
+				}
+			];
+		},
+
+		renderHTML({ HTMLAttributes }) {
+			const { html, ...rest } = HTMLAttributes;
+			return [
+				'div',
+				mergeAttributes(rest, {
+					class: 'raw-html-embed-shell',
+					'data-html-embed-block': 'true',
+					'data-raw-html': typeof html === 'string' ? html : ''
+				})
+			];
+		},
+
+		addNodeView() {
+			return ({ node }) => {
+				const dom = document.createElement('div');
+				dom.className = 'raw-html-embed-shell';
+				dom.setAttribute('data-html-embed-block', 'true');
+				dom.setAttribute('contenteditable', 'false');
+
+				const content = document.createElement('div');
+				content.className = 'raw-html-embed-render';
+				content.innerHTML = sanitizeHtml(String(node.attrs.html ?? ''));
+				dom.appendChild(content);
+
+				return { dom };
+			};
+		}
+	});
 
 	type DocRecord = {
 		id: number;
@@ -69,6 +133,7 @@
 	let markdownEditorNode = $state<HTMLElement | null>(null);
 	let markdownEditorView: EditorView | null = null;
 	let markdownContent = $state('');
+	let markdownDirty = $state(false);
 	let htmlContent = $state('');
 	let editMode = $state<'rich' | 'html' | 'markdown'>('rich');
 	let blockHandleVisible = $state(false);
@@ -90,6 +155,7 @@
 	let isMobileViewport = $state(false);
 	let mobileSidebarOpen = $state(false);
 	let mobileToolbarExpanded = $state(false);
+	let mobileToolbarDragOffset = $state(0);
 	let lockPage = $state(false);
 	let theme = $state('cupcake');
 	let pagePaddingX = $state(48);
@@ -106,6 +172,9 @@
 	let activeHighlightColorState = $state('');
 	let docMenuPosition = $state({ top: 0, left: 0 });
 	let docMenuNode = $state<HTMLElement | null>(null);
+	let tableContextMenuOpen = $state(false);
+	let tableContextMenuPosition = $state({ top: 0, left: 0 });
+	let tableContextMenuNode = $state<HTMLElement | null>(null);
 	let showTextColorModal = $state(false);
 	let showHighlightColorModal = $state(false);
 	let textColorControls = $state({ l: 24, c: 0.03, h: 258, a: 1 });
@@ -157,6 +226,9 @@
 	let showRenameFolderModal = $state(false);
 	let showDeleteFolderModal = $state(false);
 	let showMoveFolderModal = $state(false);
+	let mobileToolbarRootNode = $state<HTMLElement | null>(null);
+	let mobileToolbarSheetNode = $state<HTMLElement | null>(null);
+	let mobileToolbarOverlayNode = $state<HTMLElement | null>(null);
 	let collapsedFolderKeys = $state<Record<string, boolean>>({});
 	let draggingDocId = $state<number | null>(null);
 	let sidebarDropIndicator = $state<{ top: number; width: number; left: number; visible: boolean }>({
@@ -178,6 +250,13 @@
 	type SpaceCategory = 'Amnesia 共享文章' | '团队工作区' | '个人笔记';
 	type SpaceContextAction = 'doc' | 'folder';
 	type SidebarDocRef = { doc: DocRecord; index: number };
+	type MentionDocItem = {
+		id: string;
+		label: string;
+		title: string;
+		emoji: string;
+		index: number;
+	};
 	type SidebarFolderEntry = {
 		key: string;
 		name: string;
@@ -296,6 +375,337 @@
 				});
 			}
 		});
+	}
+
+	function getDocPlainText(html: string) {
+		if (typeof document === 'undefined') return html;
+		const temp = document.createElement('div');
+		temp.innerHTML = html;
+		return (temp.textContent || temp.innerText || '').replace(/\s+/g, ' ').trim();
+	}
+
+	function getDocMentionItems(query = ''): MentionDocItem[] {
+		const normalized = query.trim().toLowerCase();
+		return docs
+			.map((doc, index) => ({
+				id: String(doc.id),
+				label: doc.title,
+				title: doc.title,
+				emoji: doc.emoji || '📝',
+				index
+			}))
+			.filter((item) => !normalized || item.title.toLowerCase().includes(normalized))
+			.slice(0, 8);
+	}
+
+	function mentionDocToHref(docId: string) {
+		return `amnesia://doc/${docId}`;
+	}
+
+	function buildMentionHref(docId: string) {
+		const item = docs.find((doc) => String(doc.id) === docId);
+		return item ? mentionDocToHref(docId) : '#';
+	}
+
+	function getDocByMentionId(docId: string) {
+		return docs.find((doc) => String(doc.id) === docId) ?? null;
+	}
+
+	function selectMentionDocById(docId: string) {
+		const index = docs.findIndex((doc) => String(doc.id) === docId);
+		if (index < 0) return;
+		handleDocClick(index, docs[index].title);
+	}
+
+	function createMentionSuggestionConfig() {
+		return {
+			char: '@',
+			allowSpaces: true,
+			items: ({ query }: { query: string }) => getDocMentionItems(query),
+			command: ({ editor, range, props }: { editor: Editor; range: { from: number; to: number }; props: MentionDocItem }) => {
+				editor
+					.chain()
+					.focus()
+					.insertContentAt(range, [
+						{
+							type: 'mention',
+							attrs: {
+								id: props.id,
+								label: props.title
+							}
+						},
+						{ type: 'text', text: ' ' }
+					])
+					.run();
+			},
+			render: () => {
+				let popup: HTMLDivElement | null = null;
+				let selectedIndex = 0;
+				let currentItems: MentionDocItem[] = [];
+
+				const syncSelection = () => {
+					if (!popup) return;
+					Array.from(popup.querySelectorAll<HTMLButtonElement>('[data-mention-item-index]')).forEach((button) => {
+						const buttonIndex = Number(button.dataset.mentionItemIndex ?? '-1');
+						button.classList.toggle('is-selected', buttonIndex === selectedIndex);
+					});
+				};
+
+				const renderItems = () => {
+					if (!popup) return;
+					if (currentItems.length === 0) {
+						popup.innerHTML = `
+							<div class="mention-menu-header">
+								<div class="mention-menu-kicker">@ 链接到文章</div>
+								<div class="mention-menu-subtitle">没有找到匹配项</div>
+							</div>
+						`;
+						return;
+					}
+					popup.innerHTML = [
+						`
+							<div class="mention-menu-header">
+								<div class="mention-menu-kicker">@ 链接到文章</div>
+								<div class="mention-menu-subtitle">选择一篇文档插入为可点击引用</div>
+							</div>
+						`,
+						...currentItems.map(
+							(item, index) => `
+								<button type="button" class="command-item mention-command-item ${index === selectedIndex ? 'is-selected' : ''}" data-mention-item-index="${index}">
+									<span class="mention-command-main">
+										<span class="mention-command-emoji">${item.emoji}</span>
+										<span class="mention-command-copy">
+											<span class="mention-command-title">${item.title}</span>
+											<span class="mention-command-meta">点击后跳转到该页面</span>
+										</span>
+									</span>
+									<span class="mention-command-shortcut">@</span>
+								</button>
+							`
+						)
+					].join('');
+					Array.from(popup.querySelectorAll<HTMLButtonElement>('[data-mention-item-index]')).forEach((button) => {
+						button.onclick = () => {
+							const idx = Number(button.dataset.mentionItemIndex ?? '-1');
+							if (idx >= 0 && currentItems[idx]) {
+								selectedIndex = idx;
+								syncSelection();
+							}
+						};
+					});
+				};
+
+				return {
+					onStart: (props: any) => {
+						currentItems = props.items ?? [];
+						selectedIndex = 0;
+						popup = document.createElement('div');
+						popup.className = 'command-menu mention-command-menu';
+						popup.style.position = 'fixed';
+						popup.style.left = `${props.clientRect?.()?.left ?? 0}px`;
+						popup.style.top = `${(props.clientRect?.()?.bottom ?? 0) + 10}px`;
+						document.body.appendChild(popup);
+						renderItems();
+						Array.from(popup.querySelectorAll<HTMLButtonElement>('[data-mention-item-index]')).forEach((button) => {
+							button.onclick = () => {
+								const idx = Number(button.dataset.mentionItemIndex ?? '-1');
+								if (idx >= 0 && currentItems[idx]) {
+									props.command(currentItems[idx]);
+								}
+							};
+						});
+						animate(popup, {
+							opacity: [0, 1],
+							translateY: [-6, 0],
+							duration: 180,
+							ease: 'outQuad'
+						});
+					},
+					onUpdate: (props: any) => {
+						currentItems = props.items ?? [];
+						selectedIndex = 0;
+						if (popup && props.clientRect) {
+							popup.style.left = `${props.clientRect().left}px`;
+							popup.style.top = `${props.clientRect().bottom + 10}px`;
+						}
+						renderItems();
+						Array.from(popup?.querySelectorAll<HTMLButtonElement>('[data-mention-item-index]') ?? []).forEach((button) => {
+							button.onclick = () => {
+								const idx = Number(button.dataset.mentionItemIndex ?? '-1');
+								if (idx >= 0 && currentItems[idx]) {
+									props.command(currentItems[idx]);
+								}
+							};
+						});
+					},
+					onKeyDown: (props: any) => {
+						if (!currentItems.length) {
+							return props.event.key === 'Escape';
+						}
+						if (props.event.key === 'ArrowDown') {
+							selectedIndex = (selectedIndex + 1) % currentItems.length;
+							syncSelection();
+							return true;
+						}
+						if (props.event.key === 'ArrowUp') {
+							selectedIndex = (selectedIndex - 1 + currentItems.length) % currentItems.length;
+							syncSelection();
+							return true;
+						}
+						if (props.event.key === 'Enter') {
+							props.command(currentItems[selectedIndex]);
+							return true;
+						}
+						if (props.event.key === 'Escape') {
+							popup?.remove();
+							popup = null;
+							return true;
+						}
+						return false;
+					},
+					onExit: () => {
+						popup?.remove();
+						popup = null;
+					}
+				};
+			}
+		};
+	}
+
+	function animateMobileToolbar(expanded: boolean, immediate = false) {
+		if (!mobileToolbarSheetNode || !mobileToolbarOverlayNode) return;
+		const overlay = mobileToolbarOverlayNode;
+		if (expanded) {
+			overlay.style.display = 'flex';
+		}
+		const expandedHeight = overlay.scrollHeight;
+		const targetHeight = expanded ? expandedHeight : 0;
+		animate(overlay, {
+			height: [overlay.offsetHeight || 0, targetHeight],
+			opacity: expanded ? [0, 1] : [1, 0],
+			duration: immediate ? 0 : 260,
+			ease: 'outExpo',
+			onComplete: () => {
+				overlay.style.height = expanded ? 'auto' : '0px';
+				overlay.style.opacity = expanded ? '1' : '0';
+				overlay.style.display = expanded ? 'flex' : 'none';
+			}
+		});
+		animate(mobileToolbarSheetNode, {
+			translateY: [mobileToolbarDragOffset, 0],
+			duration: immediate ? 0 : 280,
+			ease: 'outExpo',
+			onComplete: () => {
+				if (mobileToolbarSheetNode) {
+					mobileToolbarSheetNode.style.removeProperty('transform');
+				}
+			}
+		});
+		mobileToolbarDragOffset = 0;
+	}
+
+	function setMobileToolbarExpanded(next: boolean, immediate = false) {
+		if (mobileToolbarExpanded === next && !immediate) return;
+		mobileToolbarExpanded = next;
+		requestAnimationFrame(() => animateMobileToolbar(next, immediate));
+	}
+
+	function toggleMobileToolbar() {
+		setMobileToolbarExpanded(!mobileToolbarExpanded);
+	}
+
+	function bindMobileToolbarGesture(node: HTMLElement) {
+		let pointerId: number | null = null;
+		let startY = 0;
+		let startOffset = 0;
+		let dragging = false;
+
+		const onPointerDown = (event: PointerEvent) => {
+			const target = event.target as HTMLElement | null;
+			if (!target?.closest('.dashboard-mobile-toolbar-sheet-handle-wrap, .dashboard-mobile-toolbar-bar')) return;
+			pointerId = event.pointerId;
+			startY = event.clientY;
+			startOffset = mobileToolbarDragOffset;
+			dragging = true;
+			node.setPointerCapture(pointerId);
+		};
+
+		const onPointerMove = (event: PointerEvent) => {
+			if (!dragging || event.pointerId !== pointerId || !mobileToolbarSheetNode) return;
+			const delta = event.clientY - startY;
+			const limit = mobileToolbarExpanded ? 180 : 240;
+			mobileToolbarDragOffset = Math.max(-limit, Math.min(limit, startOffset + delta));
+			mobileToolbarSheetNode.style.transform = `translateY(${mobileToolbarDragOffset}px)`;
+		};
+
+		const finishGesture = (event: PointerEvent) => {
+			if (!dragging || event.pointerId !== pointerId) return;
+			dragging = false;
+			if (pointerId != null && node.hasPointerCapture(pointerId)) {
+				node.releasePointerCapture(pointerId);
+			}
+			const threshold = mobileToolbarExpanded ? 72 : -56;
+			const shouldExpand = mobileToolbarExpanded
+				? mobileToolbarDragOffset < 72
+				: mobileToolbarDragOffset < threshold;
+			const shouldCollapse = mobileToolbarExpanded && mobileToolbarDragOffset > 72;
+			if (shouldCollapse) {
+				setMobileToolbarExpanded(false);
+			} else if (shouldExpand) {
+				setMobileToolbarExpanded(true);
+			} else {
+				animateMobileToolbar(mobileToolbarExpanded);
+			}
+			pointerId = null;
+		};
+
+		node.addEventListener('pointerdown', onPointerDown);
+		node.addEventListener('pointermove', onPointerMove);
+		node.addEventListener('pointerup', finishGesture);
+		node.addEventListener('pointercancel', finishGesture);
+
+		return {
+			destroy() {
+				node.removeEventListener('pointerdown', onPointerDown);
+				node.removeEventListener('pointermove', onPointerMove);
+				node.removeEventListener('pointerup', finishGesture);
+				node.removeEventListener('pointercancel', finishGesture);
+			}
+		};
+	}
+
+	function runUndo() {
+		if (editMode === 'rich') {
+			editor?.chain().focus().undo().run();
+			return;
+		}
+		if (markdownEditorView) {
+			codeMirrorUndo(markdownEditorView);
+		}
+	}
+
+	function runRedo() {
+		if (editMode === 'rich') {
+			editor?.chain().focus().redo().run();
+			return;
+		}
+		if (markdownEditorView) {
+			codeMirrorRedo(markdownEditorView);
+		}
+	}
+
+	function canUndo() {
+		if (editMode === 'rich') {
+			return !!editor?.can().chain().focus().undo().run();
+		}
+		return !!markdownEditorView;
+	}
+
+	function canRedo() {
+		if (editMode === 'rich') {
+			return !!editor?.can().chain().focus().redo().run();
+		}
+		return !!markdownEditorView;
 	}
 
 	function openQuickSearchModal() {
@@ -1479,6 +1889,33 @@
 		});
 	}
 
+	function escapeHtmlAttribute(value: string) {
+		return value
+			.replaceAll('&', '&amp;')
+			.replaceAll('"', '&quot;')
+			.replaceAll('<', '&lt;')
+			.replaceAll('>', '&gt;');
+	}
+
+	function htmlToMarkdownSource(html: string) {
+		if (typeof document === 'undefined') return html;
+		const temp = document.createElement('div');
+		temp.innerHTML = html;
+		temp.querySelectorAll('[style*="color"], mark[style], span[style]').forEach((node) => {
+			if (!(node instanceof HTMLElement)) return;
+			node.dataset.inlineStyled = 'true';
+		});
+		temp.querySelectorAll('[data-html-embed-block]').forEach((node) => {
+			if (!(node instanceof HTMLElement)) return;
+			const raw = node.dataset.rawHtml || '';
+			const wrapper = document.createElement('div');
+			wrapper.dataset.inlineStyled = 'true';
+			wrapper.innerHTML = raw;
+			node.replaceWith(wrapper);
+		});
+		return turndownService.turndown(temp.innerHTML);
+	}
+
 	function formatCompactDate(value?: string) {
 		if (!value) return '未记录';
 		const date = new Date(value);
@@ -1543,16 +1980,23 @@
 			state: EditorState.create({
 				doc: markdownContent,
 				extensions: [
+					history(),
 					lineNumbers(),
 					highlightActiveLineGutter(),
 					markdownLanguage(),
 					EditorView.lineWrapping,
 					scrollPastEnd(),
 					preserveTrailingBlankLinesKeymap,
+					keymap.of([
+						{ key: 'Mod-z', run: undoSelection, preventDefault: true },
+						{ key: 'Mod-y', run: redoSelection, preventDefault: true },
+						{ key: 'Mod-Shift-z', run: redoSelection, preventDefault: true }
+					]),
 					EditorView.updateListener.of(async (update) => {
 						if (!update.docChanged) return;
 						markdownContent = update.state.doc.toString();
-						markdownPreviewHtml = await marked.parse(markdownContent);
+						markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownContent));
+						markdownDirty = true;
 					})
 				]
 			})
@@ -1571,10 +2015,16 @@
 			state: EditorState.create({
 				doc: htmlContent,
 				extensions: [
+					history(),
 					lineNumbers(),
 					highlightActiveLineGutter(),
 					EditorView.lineWrapping,
 					scrollPastEnd(),
+					keymap.of([
+						{ key: 'Mod-z', run: undoSelection, preventDefault: true },
+						{ key: 'Mod-y', run: redoSelection, preventDefault: true },
+						{ key: 'Mod-Shift-z', run: redoSelection, preventDefault: true }
+					]),
 					EditorView.updateListener.of((update) => {
 						if (!update.docChanged) return;
 						htmlContent = update.state.doc.toString();
@@ -1646,6 +2096,10 @@
 		activeDocMenuId = null;
 	}
 
+	function closeTableContextMenu() {
+		tableContextMenuOpen = false;
+	}
+
 	function closeSpaceContextMenu() {
 		spaceContextMenuOpen = false;
 		spaceContextMenuFolder = '';
@@ -1659,6 +2113,25 @@
 			scale: [0.97, 1],
 			duration: 200,
 			ease: 'outExpo'
+		});
+	}
+
+	function openTableContextMenu(event: MouseEvent) {
+		event.preventDefault();
+		tableContextMenuPosition = {
+			top: event.clientY + 4,
+			left: Math.max(14, event.clientX - 8)
+		};
+		tableContextMenuOpen = true;
+		requestAnimationFrame(() => {
+			if (!tableContextMenuNode) return;
+			animate(tableContextMenuNode, {
+				opacity: [0, 1],
+				translateY: [-8, 0],
+				scale: [0.97, 1],
+				duration: 200,
+				ease: 'outExpo'
+			});
 		});
 	}
 
@@ -2110,8 +2583,39 @@
 
 	function confirmInsertSafeHtml() {
 		if (!editor || !htmlEmbedInput.trim()) return;
-		editor.chain().focus().insertContent(sanitizeHtml(htmlEmbedInput)).run();
+		const sanitizedHtml = sanitizeHtml(htmlEmbedInput.trim());
+		if (!sanitizedHtml.trim()) {
+			toast.warning('可插入的 HTML 为空，已被安全过滤。');
+			return;
+		}
+		editor
+			.chain()
+			.focus()
+			.insertContent({
+				type: 'rawHtmlEmbed',
+				attrs: {
+					html: sanitizedHtml
+				}
+			})
+			.run();
+		syncActiveFormattingState();
 		showHtmlModal = false;
+	}
+
+	function toggleTaskListBlock() {
+		editor?.chain().focus().toggleTaskList().run();
+	}
+
+	function insertBasicTable() {
+		editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+	}
+
+	function addTableRowAfter() {
+		editor?.chain().focus().addRowAfter().run();
+	}
+
+	function addTableColumnAfter() {
+		editor?.chain().focus().addColumnAfter().run();
 	}
 
 	async function handleImageFileUpload(file: File) {
@@ -2269,6 +2773,12 @@ async function copyPageContent() {
 			run: () => editor?.chain().focus().toggleOrderedList().run()
 		},
 		{
+			id: 'task',
+			label: '待办列表',
+			hint: '插入可勾选的 to-do',
+			run: () => editor?.chain().focus().toggleTaskList().run()
+		},
+		{
 			id: 'quote',
 			label: '引用',
 			hint: '强调引用块',
@@ -2285,6 +2795,12 @@ async function copyPageContent() {
 			label: '分割线',
 			hint: '插入横向分隔',
 			run: () => editor?.chain().focus().setHorizontalRule().run()
+		},
+		{
+			id: 'table',
+			label: '表格',
+			hint: '插入 3x3 表格',
+			run: () => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
 		}
 	];
 
@@ -2355,6 +2871,9 @@ async function copyPageContent() {
 
 	// 触发云端自动防抖同步
 	function triggerAutoSave() {
+		if (editMode === 'markdown') {
+			return;
+		}
 		syncStatus = 'syncing';
 		clearTimeout(saveTimeout);
 		saveTimeout = setTimeout(async () => {
@@ -2390,15 +2909,10 @@ async function copyPageContent() {
 	}
 
 	function syncMarkdownFromHtml(html: string) {
-		const temp = document.createElement('div');
-		temp.innerHTML = html;
-		temp.querySelectorAll('[style*="color"], mark[style], span[style]').forEach((node) => {
-			if (!(node instanceof HTMLElement)) return;
-			node.dataset.inlineStyled = 'true';
-		});
 		htmlContent = html;
-		markdownContent = turndownService.turndown(temp.innerHTML);
+		markdownContent = htmlToMarkdownSource(html);
 		markdownPreviewHtml = html;
+		markdownDirty = false;
 	}
 
 	async function applyHtmlToEditor(html: string) {
@@ -2417,18 +2931,32 @@ async function copyPageContent() {
 		if (!editor || !docs[activeDocIndex]) return;
 
 		const parsed = await marked.parse(markdown);
-		editor.commands.setContent(parsed, { emitUpdate: false });
+		const normalizedHtml = sanitizeHtml(parsed).replace(
+			/<div([^>]*?)data-inline-styled="true"([^>]*)>([\s\S]*?)<\/div>/gi,
+			(_match, beforeAttrs, afterAttrs, innerHtml) =>
+				`<div data-html-embed-block="true" data-raw-html="${escapeHtmlAttribute(innerHtml)}"${beforeAttrs}${afterAttrs}></div>`
+		);
+		editor.commands.setContent(normalizedHtml, { emitUpdate: false });
 		docs[activeDocIndex].content = editor.getHTML();
 		htmlContent = docs[activeDocIndex].content;
 		markdownPreviewHtml = docs[activeDocIndex].content;
+		syncMarkdownFromHtml(docs[activeDocIndex].content);
 		syncActiveFormattingState();
+		markdownDirty = false;
 		triggerAutoSave();
 	}
 
 	async function handleMarkdownInput(e: Event) {
 		const target = e.currentTarget as HTMLTextAreaElement;
 		markdownContent = target.value;
-		markdownPreviewHtml = markdownContent;
+		markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownContent));
+		markdownDirty = true;
+	}
+
+	async function saveMarkdownChanges() {
+		if (editMode !== 'markdown') return;
+		await applyMarkdownToEditor(markdownContent);
+		toast.success('Markdown 已手动保存');
 	}
 
 	function getTopLevelBlock(target: EventTarget | null) {
@@ -2652,6 +3180,11 @@ async function copyPageContent() {
 			return;
 		}
 
+		if (editMode === 'markdown' && markdownDirty) {
+			toast.warning('Markdown 有未保存改动，请先手动保存。');
+			return;
+		}
+
 		if (mode === 'html') {
 			htmlContent = docs[activeDocIndex]?.content || editor?.getHTML() || '';
 			markdownPreviewHtml = sanitizeHtml(htmlContent);
@@ -2666,9 +3199,7 @@ async function copyPageContent() {
 			return;
 		}
 
-		if (editMode === 'markdown') {
-			await applyMarkdownToEditor(markdownContent);
-		} else if (editMode === 'html') {
+		if (editMode === 'html') {
 			await applyHtmlToEditor(htmlContent);
 		}
 
@@ -2688,6 +3219,8 @@ async function copyPageContent() {
 		pendingEditMode = null;
 		await tick();
 		initMarkdownEditor();
+		markdownDirty = false;
+		toast.info('已进入 Markdown 模式，修改后要手动保存。');
 		hideCommandMenu();
 		hideBlockHandle();
 		requestAnimationFrame(() => {
@@ -2788,13 +3321,63 @@ async function copyPageContent() {
 					Color,
 					Highlight.configure({ multicolor: true }),
 					Link.configure({ openOnClick: false }),
-					Image
+					Image,
+					TaskList,
+					TaskItem.configure({ nested: true }),
+					Table.configure({
+						resizable: true,
+						renderWrapper: true
+					}),
+					TableRow,
+					TableHeader,
+					TableCell,
+					Mention.configure({
+						HTMLAttributes: {
+							class: 'doc-mention'
+						},
+						renderText: ({ node }) => `@${node.attrs.label ?? node.attrs.id}`,
+						renderHTML: ({ node }) => [
+							'a',
+							{
+								href: buildMentionHref(String(node.attrs.id ?? '')),
+								'data-doc-id': String(node.attrs.id ?? ''),
+								'data-label': String(node.attrs.label ?? ''),
+								'data-type': 'mention'
+							},
+							`@${node.attrs.label ?? node.attrs.id}`
+						],
+						suggestion: createMentionSuggestionConfig() as any
+					})
 				],
 				content: initialDoc.content,
 				editorProps: {
 					attributes: {
 						class: 'tiptap',
 						style: `font-size:${docFontSize}px; --dashboard-doc-font:${docFontFamily};`
+					},
+					handleDOMEvents: {
+						contextmenu: (_view, event) => {
+							const target = event.target;
+							if (!(target instanceof HTMLElement)) return false;
+							const insideTable = target.closest('.tableWrapper, table, td, th');
+							if (!(insideTable instanceof HTMLElement)) {
+								closeTableContextMenu();
+								return false;
+							}
+							openTableContextMenu(event as MouseEvent);
+							return true;
+						}
+					},
+					handleClick(view, _pos, event) {
+						const target = event.target;
+						if (!(target instanceof HTMLElement)) return false;
+						const mentionNode = target.closest('[data-type="mention"][data-doc-id]');
+						if (!(mentionNode instanceof HTMLElement)) return false;
+						const docId = mentionNode.dataset.docId;
+						if (!docId) return false;
+						event.preventDefault();
+						selectMentionDocById(docId);
+						return true;
 					}
 				},
 				onUpdate: ({ editor }) => {
@@ -3592,6 +4175,16 @@ async function copyPageContent() {
 							>
 								HTML
 							</button>
+							{#if editMode === 'markdown'}
+								<button
+									type="button"
+									onclick={saveMarkdownChanges}
+									class="dashboard-mode-toggle {markdownDirty ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+									title="手动保存 Markdown"
+								>
+									保存
+								</button>
+							{/if}
 
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
 
@@ -3686,6 +4279,14 @@ async function copyPageContent() {
 							</button>
 							<button
 								type="button"
+								onclick={toggleTaskListBlock}
+								class="dashboard-toolbar-btn {editor.isActive('taskList') ? 'is-active' : ''}"
+								title="待办列表"
+							>
+								☑ 待办
+							</button>
+							<button
+								type="button"
 								onclick={() => editor?.chain().focus().toggleBlockquote().run()}
 								class="dashboard-toolbar-btn {editor.isActive('blockquote') ? 'is-active' : ''}"
 								title="引用块"
@@ -3700,11 +4301,19 @@ async function copyPageContent() {
 							>
 								代码块
 							</button>
+							<button
+								type="button"
+								onclick={insertBasicTable}
+								class="dashboard-toolbar-btn {editor.isActive('table') ? 'is-active' : ''}"
+								title="插入表格"
+							>
+								表格
+							</button>
 
 							<div class="toolbar-divider mx-1 h-4 w-px"></div>
 
 							<div class="relative">
-							    <div class="tooltip" data-tip="文本颜色">
+							    <div class="tooltip" data-tip="文本颜色（右键）">
 								<button
 									type="button"
 									class="dashboard-toolbar-btn font-black {activeTextColorState ? 'is-active' : ''}"
@@ -3723,7 +4332,7 @@ async function copyPageContent() {
 							</div>
 
 							<div class="relative">
-								<div class="tooltip" data-tip="文字背景色">
+								<div class="tooltip" data-tip="文字背景色（右键）">
 									<button
 										type="button"
 										class="dashboard-toolbar-btn font-black {activeHighlightColorState ? 'is-active' : ''}"
@@ -3745,8 +4354,8 @@ async function copyPageContent() {
 							<div class="tooltip" data-tip="撤销">
 								<button
 									type="button"
-									onclick={() => editor?.chain().focus().undo().run()}
-									disabled={!editor.can().chain().focus().undo().run()}
+									onclick={runUndo}
+									disabled={!canUndo()}
 									class="dashboard-toolbar-btn"
 									title="撤销"
 								>
@@ -3756,8 +4365,8 @@ async function copyPageContent() {
 							<div class="tooltip" data-tip="重做">
 								<button
 									type="button"
-									onclick={() => editor?.chain().focus().redo().run()}
-									disabled={!editor.can().chain().focus().redo().run()}
+									onclick={runRedo}
+									disabled={!canRedo()}
 									class="dashboard-toolbar-btn"
 									title="重做"
 								>
@@ -3781,15 +4390,15 @@ async function copyPageContent() {
 </div>
 
 {#if editor && isMobileViewport}
-	<div class="dashboard-mobile-toolbar-root">
-		<div class="dashboard-mobile-toolbar-sheet {mobileToolbarExpanded ? 'is-expanded' : ''}">
+	<div bind:this={mobileToolbarRootNode} class="dashboard-mobile-toolbar-root">
+		<div use:bindMobileToolbarGesture bind:this={mobileToolbarSheetNode} class="dashboard-mobile-toolbar-sheet {mobileToolbarExpanded ? 'is-expanded' : ''}">
 			<div class="dashboard-mobile-toolbar-sheet-handle-wrap">
 				<button
 					type="button"
 					class="dashboard-mobile-toolbar-sheet-handle"
 					aria-label={mobileToolbarExpanded ? '收起工具栏' : '展开工具栏'}
 					aria-expanded={mobileToolbarExpanded}
-					onclick={() => (mobileToolbarExpanded = !mobileToolbarExpanded)}
+					onclick={toggleMobileToolbar}
 				>
 					<span class="dashboard-mobile-toolbar-sheet-grabber"></span>
 					<!-- <svg class={`dashboard-mobile-toolbar-arrow ${mobileToolbarExpanded ? 'is-open' : ''}`} xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
@@ -3839,7 +4448,7 @@ async function copyPageContent() {
 					H2
 				</button>
 			</div>
-			<div class="editor-toolbar-overlay is-mobile {mobileToolbarExpanded ? 'is-expanded' : ''}">
+			<div bind:this={mobileToolbarOverlayNode} class="editor-toolbar-overlay is-mobile {mobileToolbarExpanded ? 'is-expanded' : ''}">
 				<button
 					type="button"
 					onclick={() => toggleEditMode('rich')}
@@ -3861,6 +4470,16 @@ async function copyPageContent() {
 				>
 					HTML
 				</button>
+				{#if editMode === 'markdown'}
+					<button
+						type="button"
+						onclick={saveMarkdownChanges}
+						class="dashboard-mode-toggle {markdownDirty ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+						title="手动保存 Markdown"
+					>
+						保存
+					</button>
+				{/if}
 
 				<div class="toolbar-divider mx-1 h-4 w-px"></div>
 
@@ -3955,6 +4574,14 @@ async function copyPageContent() {
 				</button>
 				<button
 					type="button"
+					onclick={toggleTaskListBlock}
+					class="dashboard-toolbar-btn {editor.isActive('taskList') ? 'is-active' : ''}"
+					title="待办列表"
+				>
+					☑ 待办
+				</button>
+				<button
+					type="button"
 					onclick={() => editor?.chain().focus().toggleBlockquote().run()}
 					class="dashboard-toolbar-btn {editor.isActive('blockquote') ? 'is-active' : ''}"
 					title="引用块"
@@ -3968,6 +4595,14 @@ async function copyPageContent() {
 					title="代码块"
 				>
 					代码块
+				</button>
+				<button
+					type="button"
+					onclick={insertBasicTable}
+					class="dashboard-toolbar-btn {editor.isActive('table') ? 'is-active' : ''}"
+					title="插入表格"
+				>
+					表格
 				</button>
 
 				<div class="toolbar-divider mx-1 h-4 w-px"></div>
@@ -4014,15 +4649,15 @@ async function copyPageContent() {
 
 				<button
 					type="button"
-					onclick={() => editor?.chain().focus().undo().run()}
-					disabled={!editor.can().chain().focus().undo().run()}
+					onclick={runUndo}
+					disabled={!canUndo()}
 					class="dashboard-toolbar-btn"
 					title="撤销"
 				>↺</button>
 				<button
 					type="button"
-					onclick={() => editor?.chain().focus().redo().run()}
-					disabled={!editor.can().chain().focus().redo().run()}
+					onclick={runRedo}
+					disabled={!canRedo()}
 					class="dashboard-toolbar-btn"
 					title="重做"
 				>↻</button>
@@ -4085,6 +4720,48 @@ async function copyPageContent() {
 							</button>
 						</div>
 					{/if}
+
+{#if tableContextMenuOpen}
+	<div class="doc-menu-backdrop" onclick={closeTableContextMenu}></div>
+	<div
+		bind:this={tableContextMenuNode}
+		class="doc-menu doc-menu-floating"
+		style={`top:${tableContextMenuPosition.top}px; left:${tableContextMenuPosition.left}px;`}
+	>
+		<div class="doc-menu-headerline">
+			<span class="doc-menu-kicker">表格操作</span>
+		</div>
+		<button class="doc-menu-item" type="button" onclick={() => { addTableRowAfter(); closeTableContextMenu(); }}>
+			<span class="doc-menu-icon">＋</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">新增一行</span>
+				<span class="doc-menu-desc">在当前行后面插入</span>
+			</span>
+		</button>
+		<button class="doc-menu-item" type="button" onclick={() => { addTableColumnAfter(); closeTableContextMenu(); }}>
+			<span class="doc-menu-icon">＋</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">新增一列</span>
+				<span class="doc-menu-desc">在当前列右侧插入</span>
+			</span>
+		</button>
+		<div class="doc-menu-divider"></div>
+		<button class="doc-menu-item" type="button" onclick={() => { editor?.chain().focus().deleteRow().run(); closeTableContextMenu(); }}>
+			<span class="doc-menu-icon">－</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">删除当前行</span>
+				<span class="doc-menu-desc">移除所在行</span>
+			</span>
+		</button>
+		<button class="doc-menu-item" type="button" onclick={() => { editor?.chain().focus().deleteColumn().run(); closeTableContextMenu(); }}>
+			<span class="doc-menu-icon">－</span>
+			<span class="doc-menu-copy">
+				<span class="doc-menu-title">删除当前列</span>
+				<span class="doc-menu-desc">移除所在列</span>
+			</span>
+		</button>
+	</div>
+{/if}
 
 {#if spaceContextMenuOpen}
 	<div class="doc-menu-backdrop" onclick={closeSpaceContextMenu}></div>
@@ -4523,6 +5200,9 @@ async function copyPageContent() {
 			</div>
 			<div class="dashboard-helper-text">
 				如果继续，我们会尽量把当前文章转成 Markdown；你编辑完成后，再把 Markdown 重新转换成 HTML 文档。
+			</div>
+			<div class="dashboard-helper-text">
+				进入 Markdown 模式后不会自动保存，修改完成后需要你手动点“保存”。
 			</div>
 			<div class="dashboard-modal-actions">
 				<button
@@ -5970,6 +6650,8 @@ async function copyPageContent() {
 			);
 		box-shadow: 0 -18px 48px var(--dashboard-shadow-color);
 		backdrop-filter: blur(22px) saturate(1.06);
+		touch-action: none;
+		will-change: transform;
 	}
 
 	.dashboard-mobile-toolbar-sheet.is-expanded {
@@ -6200,6 +6882,309 @@ async function copyPageContent() {
 
 	.command-item:hover {
 		background: var(--dashboard-hover-bg);
+	}
+
+	:global(.mention-command-menu) {
+		position: fixed;
+		z-index: 120;
+		width: min(22rem, calc(100vw - 2rem));
+		border: 1px solid color-mix(in oklab, var(--dashboard-accent) 16%, var(--dashboard-border));
+		border-radius: calc(var(--dashboard-radius) * 0.78);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in oklab, var(--dashboard-panel) 98%, white 2%),
+				color-mix(in oklab, var(--dashboard-panel) 93%, var(--dashboard-bg))
+			);
+		padding: 0.55rem;
+		box-shadow:
+			0 28px 56px color-mix(in oklab, var(--dashboard-shadow-color) 90%, transparent),
+			inset 0 1px 0 color-mix(in oklab, white 16%, transparent);
+		backdrop-filter: blur(20px) saturate(1.1);
+	}
+
+	:global(.mention-menu-header) {
+		padding: 0.35rem 0.45rem 0.55rem;
+	}
+
+	:global(.mention-menu-kicker) {
+		color: var(--dashboard-fg);
+		font-size: 0.8rem;
+		font-weight: 900;
+		letter-spacing: 0.02em;
+	}
+
+	:global(.mention-menu-subtitle) {
+		margin-top: 0.18rem;
+		color: var(--dashboard-soft-fg);
+		font-size: 0.68rem;
+		line-height: 1.35;
+	}
+
+	:global(.mention-command-menu .mention-command-item) {
+		align-items: center;
+		gap: 0.75rem;
+		border: 1px solid transparent;
+		border-radius: calc(var(--dashboard-radius) * 0.55);
+		padding: 0.72rem 0.78rem;
+		transition:
+			transform 160ms ease,
+			background-color 160ms ease,
+			border-color 160ms ease,
+			box-shadow 160ms ease;
+	}
+
+	:global(.mention-command-menu .mention-command-item:hover) {
+		transform: translateY(-1px);
+		border-color: color-mix(in oklab, var(--dashboard-accent) 16%, transparent);
+		box-shadow: inset 0 1px 0 color-mix(in oklab, white 8%, transparent);
+	}
+
+	:global(.mention-command-main) {
+		display: inline-flex;
+		min-width: 0;
+		flex: 1;
+		align-items: center;
+		gap: 0.72rem;
+	}
+
+	:global(.mention-command-emoji) {
+		display: inline-flex;
+		height: 2rem;
+		width: 2rem;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+		border-radius: 0.8rem;
+		background: color-mix(in oklab, var(--dashboard-accent) 12%, transparent);
+		font-size: 1rem;
+		box-shadow: inset 0 1px 0 color-mix(in oklab, white 16%, transparent);
+	}
+
+	:global(.mention-command-copy) {
+		display: flex;
+		min-width: 0;
+		flex: 1;
+		flex-direction: column;
+	}
+
+	:global(.mention-command-title) {
+		color: var(--dashboard-fg);
+		font-size: 0.82rem;
+		font-weight: 800;
+		line-height: 1.2;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	:global(.mention-command-meta) {
+		margin-top: 0.14rem;
+		color: var(--dashboard-soft-fg);
+		font-size: 0.67rem;
+		line-height: 1.25;
+	}
+
+	:global(.mention-command-shortcut) {
+		display: inline-flex;
+		height: 1.45rem;
+		min-width: 1.45rem;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 8%, transparent);
+		border-radius: 999px;
+		background: color-mix(in oklab, var(--dashboard-fg) 4%, transparent);
+		color: var(--dashboard-soft-fg);
+		font-size: 0.68rem;
+		font-weight: 900;
+	}
+
+	:global(.mention-command-menu .command-item.is-selected),
+	:global(.mention-command-menu .mention-command-item.is-selected) {
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in oklab, var(--dashboard-accent) 16%, var(--dashboard-panel)),
+				color-mix(in oklab, var(--dashboard-accent) 10%, var(--dashboard-panel))
+			);
+		border-color: color-mix(in oklab, var(--dashboard-accent) 28%, transparent);
+		box-shadow:
+			0 14px 28px color-mix(in oklab, var(--dashboard-shadow-color) 45%, transparent),
+			inset 0 1px 0 color-mix(in oklab, white 12%, transparent);
+	}
+
+	:global(.doc-mention) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.36rem;
+		border: 1px solid color-mix(in oklab, var(--dashboard-accent) 18%, transparent);
+		border-radius: 999px;
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in oklab, var(--dashboard-accent) 18%, transparent),
+				color-mix(in oklab, var(--dashboard-accent) 10%, transparent)
+			);
+		padding: 0.14rem 0.56rem 0.14rem 0.46rem;
+		color: color-mix(in oklab, var(--dashboard-accent) 48%, var(--dashboard-fg));
+		text-decoration: none;
+		font-weight: 800;
+		line-height: 1.2;
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklab, white 12%, transparent),
+			0 4px 10px color-mix(in oklab, var(--dashboard-shadow-color) 22%, transparent);
+	}
+
+	:global(.doc-mention::before) {
+		content: '@';
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1rem;
+		height: 1rem;
+		border-radius: 999px;
+		background: color-mix(in oklab, var(--dashboard-accent) 22%, transparent);
+		color: color-mix(in oklab, var(--dashboard-accent) 60%, var(--dashboard-fg));
+		font-size: 0.68rem;
+		font-weight: 900;
+		line-height: 1;
+	}
+
+	:global(.doc-mention:hover) {
+		transform: translateY(-1px);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in oklab, var(--dashboard-accent) 24%, transparent),
+				color-mix(in oklab, var(--dashboard-accent) 14%, transparent)
+			);
+		border-color: color-mix(in oklab, var(--dashboard-accent) 30%, transparent);
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklab, white 12%, transparent),
+			0 10px 18px color-mix(in oklab, var(--dashboard-shadow-color) 24%, transparent);
+	}
+
+	:global(.tiptap ul[data-type='taskList']) {
+		list-style: none;
+		margin-left: 0;
+		padding-left: 0.35rem;
+	}
+
+	:global(.tiptap ul[data-type='taskList'] li) {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		min-height: 1.9rem;
+	}
+
+	:global(.tiptap ul[data-type='taskList'] li > label) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		margin-top: 0;
+		flex-shrink: 0;
+	}
+
+	:global(.tiptap ul[data-type='taskList'] li > div) {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		min-height: 1.9rem;
+	}
+
+	:global(.tiptap ul[data-type='taskList'] li > div > p) {
+		margin: 0;
+		line-height: 1.6;
+	}
+
+	:global(.tiptap ul[data-type='taskList'] input[type='checkbox']) {
+		appearance: none;
+		width: 1.05rem;
+		height: 1.05rem;
+		margin: 0;
+		border: 1px solid color-mix(in oklab, var(--dashboard-accent) 28%, var(--dashboard-border));
+		border-radius: 0.35rem;
+		background: color-mix(in oklab, var(--dashboard-panel) 96%, transparent);
+		box-shadow: inset 0 1px 0 color-mix(in oklab, white 12%, transparent);
+		cursor: pointer;
+		position: relative;
+		flex-shrink: 0;
+		align-self: center;
+		transition:
+			background-color 160ms ease,
+			border-color 160ms ease,
+			box-shadow 160ms ease,
+			transform 160ms ease;
+	}
+
+	:global(.tiptap ul[data-type='taskList'] input[type='checkbox']:hover) {
+		transform: translateY(-1px);
+		border-color: color-mix(in oklab, var(--dashboard-accent) 44%, transparent);
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklab, white 16%, transparent),
+			0 6px 12px color-mix(in oklab, var(--dashboard-shadow-color) 18%, transparent);
+	}
+
+	:global(.tiptap ul[data-type='taskList'] input[type='checkbox']:checked) {
+		border-color: color-mix(in oklab, var(--dashboard-accent) 68%, transparent);
+		background: color-mix(in oklab, var(--dashboard-accent) 68%, var(--dashboard-panel));
+	}
+
+	:global(.tiptap ul[data-type='taskList'] input[type='checkbox']:checked::after) {
+		content: '';
+		position: absolute;
+		left: 0.31rem;
+		top: 0.12rem;
+		width: 0.26rem;
+		height: 0.5rem;
+		border-right: 2px solid white;
+		border-bottom: 2px solid white;
+		transform: rotate(45deg);
+	}
+
+	:global(.tiptap ul[data-type='taskList'] li[data-checked='true'] > div) {
+		opacity: 0.72;
+		text-decoration: line-through;
+		text-decoration-thickness: 1.5px;
+	}
+
+	:global(.tiptap .tableWrapper) {
+		/*margin: 1.25rem 0;*/
+		overflow-x: auto;
+		/*border: 1px solid var(--dashboard-border);*/
+		/*border-radius: calc(var(--dashboard-radius) * 0.65);*/
+		/*background: color-mix(in oklab, var(--dashboard-panel) 92%, transparent);*/
+		/*box-shadow: inset 0 1px 0 color-mix(in oklab, white 10%, transparent);*/
+	}
+
+	:global(.tiptap table) {
+		width: 100%;
+		border-collapse: collapse;
+		min-width: 100%;
+		table-layout: fixed;
+		overflow: hidden;
+		border-radius: inherit;
+	}
+
+	:global(.tiptap th),
+	:global(.tiptap td) {
+		border: 1px solid var(--dashboard-border);
+		padding: 0.42rem 0.6rem;
+		min-height: 2.2rem;
+		vertical-align: top;
+		text-align: left;
+		background: color-mix(in oklab, var(--dashboard-panel) 96%, transparent);
+	}
+
+	:global(.tiptap th) {
+		background: color-mix(in oklab, var(--dashboard-accent) 10%, var(--dashboard-panel));
+		font-weight: 800;
+	}
+
+	:global(.tiptap th p),
+	:global(.tiptap td p) {
+		margin: 0;
+		min-height: 1.2em;
 	}
 
 	.command-item-title {
