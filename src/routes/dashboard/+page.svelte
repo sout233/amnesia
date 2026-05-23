@@ -118,6 +118,9 @@
 		isLocked?: boolean;
 		lockedByUserId?: string | number | null;
 		lockedAt?: string | null;
+		pagePaddingX?: number;
+		docFontSize?: number;
+		docFontFamily?: string;
 	};
 
 	let sidebarNode = $state<HTMLElement | null>(null);
@@ -1691,6 +1694,68 @@
 		return ((doc?.settings ?? {}) as DocSettings) || {};
 	}
 
+	function clampDocPadding(value: number) {
+		return Math.max(24, Math.min(96, Math.round(value / 18) * 18));
+	}
+
+	function clampDocFontSize(value: number) {
+		return Math.max(14, Math.min(22, Math.round(value / 2) * 2));
+	}
+
+	function getDefaultDocAppearanceSettings() {
+		return {
+			pagePaddingX: 24,
+			docFontSize: 16,
+			docFontFamily: 'Noto Sans SC'
+		};
+	}
+
+	function readDocAppearanceSettings(doc?: DocRecord | null) {
+		const settings = getDocSettings(doc);
+		const defaults = getDefaultDocAppearanceSettings();
+		return {
+			pagePaddingX:
+				typeof settings.pagePaddingX === 'number'
+					? clampDocPadding(settings.pagePaddingX)
+					: defaults.pagePaddingX,
+			docFontSize:
+				typeof settings.docFontSize === 'number'
+					? clampDocFontSize(settings.docFontSize)
+					: defaults.docFontSize,
+			docFontFamily:
+				typeof settings.docFontFamily === 'string' && settings.docFontFamily.trim()
+					? settings.docFontFamily
+					: defaults.docFontFamily
+		};
+	}
+
+	function applyDocAppearanceFromDoc(doc?: DocRecord | null) {
+		const appearance = readDocAppearanceSettings(doc);
+		pagePaddingX = appearance.pagePaddingX;
+		docFontSize = appearance.docFontSize;
+		docFontFamily = appearance.docFontFamily;
+	}
+
+	function buildDocAppearanceSettingsPatch(doc: DocRecord, patch: Partial<DocSettings>) {
+		const currentSettings = getDocSettings(doc);
+		const currentAppearance = readDocAppearanceSettings(doc);
+		return {
+			...currentSettings,
+			pagePaddingX:
+				typeof patch.pagePaddingX === 'number'
+					? clampDocPadding(patch.pagePaddingX)
+					: currentAppearance.pagePaddingX,
+			docFontSize:
+				typeof patch.docFontSize === 'number'
+					? clampDocFontSize(patch.docFontSize)
+					: currentAppearance.docFontSize,
+			docFontFamily:
+				typeof patch.docFontFamily === 'string' && patch.docFontFamily.trim()
+					? patch.docFontFamily
+					: currentAppearance.docFontFamily
+		} satisfies DocSettings;
+	}
+
 	function isDocLocked(doc?: DocRecord | null) {
 		return !!getDocSettings(doc).isLocked;
 	}
@@ -1937,6 +2002,7 @@
 
 		const currentDoc = docs[activeDocIndex];
 		if (currentDoc) {
+			applyDocAppearanceFromDoc(currentDoc);
 			if (titleNode) titleNode.innerText = currentDoc.title;
 			if (editor) {
 				editor.commands.setContent(currentDoc.content, { emitUpdate: false });
@@ -1944,6 +2010,7 @@
 			}
 			syncMarkdownFromHtml(currentDoc.content);
 			htmlContent = currentDoc.content;
+			applyTheme();
 		}
 	}
 
@@ -2086,6 +2153,43 @@
 			globalUiFont = parsed.globalUiFont ?? globalUiFont;
 		} catch {
 			// ignore malformed local settings
+		}
+	}
+
+	async function persistActiveDocAppearanceSettings(patch: Partial<DocSettings>) {
+		const currentDoc = docs[activeDocIndex];
+		if (!currentDoc) return;
+		if (!ensureEditableDocOrToast()) {
+			applyDocAppearanceFromDoc(currentDoc);
+			applyTheme();
+			return;
+		}
+
+		const nextSettings = buildDocAppearanceSettingsPatch(currentDoc, patch);
+		const nextAppearance = readDocAppearanceSettings({
+			...currentDoc,
+			settings: nextSettings
+		});
+
+		pagePaddingX = nextAppearance.pagePaddingX;
+		docFontSize = nextAppearance.docFontSize;
+		docFontFamily = nextAppearance.docFontFamily;
+		applyTheme();
+
+		try {
+			const updated = await updateDoc({
+				id: currentDoc.id,
+				settings: nextSettings
+			});
+			docs[activeDocIndex] = {
+				...docs[activeDocIndex],
+				settings: updated.settings ?? nextSettings,
+				updated_at: updated.updated_at ?? docs[activeDocIndex].updated_at
+			};
+		} catch {
+			applyDocAppearanceFromDoc(currentDoc);
+			applyTheme();
+			toast.error('保存页面样式设置失败');
 		}
 	}
 
@@ -2822,7 +2926,9 @@
 				spaceType,
 				isEncrypted: initialContent.isEncrypted,
 				encryptionVersion: initialContent.encryptionVersion,
-				settings: {}
+				settings: {
+					...getDefaultDocAppearanceSettings()
+				}
 			});
 			docs = [...docs, await hydrateDocFromDatabase(data)];
 			showCreateDocModal = false;
@@ -2957,6 +3063,7 @@
 				isEncrypted: initialContent.isEncrypted,
 				encryptionVersion: initialContent.encryptionVersion,
 				settings: {
+					...getDefaultDocAppearanceSettings(),
 					isFolder: true,
 					parentSpace: category
 				}
@@ -3744,6 +3851,7 @@ async function copyPageContent() {
 		const currentDoc = docs[index];
 		if (currentDoc) {
 			syncDocLockState(currentDoc);
+			applyDocAppearanceFromDoc(currentDoc);
 			// 同步更新大标题的 DOM，避免 Svelte 重绘丢失 contenteditable 的光标位置
 			if (titleNode) {
 				titleNode.innerText = currentDoc.title;
@@ -3755,6 +3863,7 @@ async function copyPageContent() {
 			}
 			syncMarkdownFromHtml(currentDoc.content);
 			htmlContent = currentDoc.content;
+			applyTheme();
 			requestAnimationFrame(() => {
 				animateCurrentDocView();
 			});
@@ -5993,13 +6102,29 @@ async function copyPageContent() {
 			<div class="dashboard-settings-grid">
 				<div class="w-full">
 					<div class="dashboard-field-label">左右边距</div>
-					<input type="range" min="24" max="96" bind:value={pagePaddingX} oninput={persistDashboardSettings} class="theme-range dashboard-range" step="18" />
+					<input
+						type="range"
+						min="24"
+						max="96"
+						bind:value={pagePaddingX}
+						oninput={() => persistActiveDocAppearanceSettings({ pagePaddingX })}
+						class="theme-range dashboard-range"
+						step="18"
+					/>
 					<div class="dashboard-range-ticks"><span>|</span><span>|</span><span>|</span><span>|</span><span>|</span></div>
 					<div class="dashboard-range-labels"><span>窄</span><span></span><span>中</span><span></span><span>宽</span></div>
 				</div>
 				<div class="w-full">
 					<div class="dashboard-field-label">字体大小</div>
-					<input type="range" min="14" max="22" bind:value={docFontSize} oninput={() => { applyTheme(); persistDashboardSettings(); }} class="theme-range dashboard-range" step="2" />
+					<input
+						type="range"
+						min="14"
+						max="22"
+						bind:value={docFontSize}
+						oninput={() => persistActiveDocAppearanceSettings({ docFontSize })}
+						class="theme-range dashboard-range"
+						step="2"
+					/>
 					<div class="dashboard-range-ticks"><span>|</span><span>|</span><span>|</span><span>|</span><span>|</span></div>
 					<div class="dashboard-range-labels"><span>14</span><span>16</span><span>18</span><span>20</span><span>22</span></div>
 				</div>
@@ -6009,7 +6134,7 @@ async function copyPageContent() {
 						bind:value={docFontFamily}
 						options={fontSelectOptions}
 						placeholder="选择页面字体"
-						onChange={() => { applyTheme(); persistDashboardSettings(); }}
+						onChange={() => persistActiveDocAppearanceSettings({ docFontFamily })}
 					/>
 				</label>
 				<label class="dashboard-checkbox-row">
