@@ -28,7 +28,7 @@
 		const info = getBrowserInfo();
 
 		if (info.isMobile) {
-			toast.info('📱 已为您优化移动端显示与手势交互');
+			toast.info('已为移动端优化');
 		}
 
 		// 页面首屏动画

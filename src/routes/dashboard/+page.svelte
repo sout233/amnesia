@@ -3568,256 +3568,8 @@ async function copyPageContent() {
 						</div>
 					{/if}
 
-					{#if editor}
-						<div class="editor-toolbar-sticky {isMobileViewport ? 'is-mobile' : ''}">
-							{#if isMobileViewport}
-								<div class="dashboard-mobile-toolbar-sheet {mobileToolbarExpanded ? 'is-expanded' : ''}">
-									<div class="dashboard-mobile-toolbar-sheet-handle-wrap">
-										<button
-											type="button"
-											class="dashboard-mobile-toolbar-sheet-handle"
-											aria-label={mobileToolbarExpanded ? '收起工具栏' : '展开工具栏'}
-											aria-expanded={mobileToolbarExpanded}
-											onclick={() => (mobileToolbarExpanded = !mobileToolbarExpanded)}
-										>
-											<span class="dashboard-mobile-toolbar-sheet-grabber"></span>
-											<svg class={`dashboard-mobile-toolbar-arrow ${mobileToolbarExpanded ? 'is-open' : ''}`} xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-												<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 9l6 6l6-6"/>
-											</svg>
-										</button>
-									</div>
-									<div class="dashboard-mobile-toolbar-bar">
-										<button
-											type="button"
-											onclick={() => editor?.chain().focus().toggleBold().run()}
-											class="dashboard-toolbar-btn font-bold {editor.isActive('bold') ? 'is-active' : ''}"
-											title="加粗"
-										>
-											B
-										</button>
-										<button
-											type="button"
-											onclick={() => editor?.chain().focus().toggleItalic().run()}
-											class="dashboard-toolbar-btn italic {editor.isActive('italic') ? 'is-active' : ''}"
-											title="斜体"
-										>
-											I
-										</button>
-										<button
-											type="button"
-											onclick={() => editor?.chain().focus().toggleStrike().run()}
-											class="dashboard-toolbar-btn line-through {editor.isActive('strike') ? 'is-active' : ''}"
-											title="删除线"
-										>
-											S
-										</button>
-										<button
-											type="button"
-											onclick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
-											class="dashboard-toolbar-btn {isEditorActive('heading', { level: 1 }) ? 'is-active font-bold' : ''}"
-											title="一级标题"
-										>
-											H1
-										</button>
-										<button
-											type="button"
-											onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
-											class="dashboard-toolbar-btn {isEditorActive('heading', { level: 2 }) ? 'is-active font-bold' : ''}"
-											title="二级标题"
-										>
-											H2
-										</button>
-									</div>
-									<div class="editor-toolbar-overlay is-mobile {mobileToolbarExpanded ? 'is-expanded' : ''}">
-							<button
-								type="button"
-								onclick={() => toggleEditMode('rich')}
-								class="dashboard-mode-toggle {editMode === 'rich' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
-							>
-								可视化
-							</button>
-							<button
-								type="button"
-								onclick={() => toggleEditMode('markdown')}
-								class="dashboard-mode-toggle dashboard-mode-toggle-mono {editMode === 'markdown' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
-							>
-								Markdown
-							</button>
-							<button
-								type="button"
-								onclick={() => toggleEditMode('html')}
-								class="dashboard-mode-toggle dashboard-mode-toggle-mono {editMode === 'html' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
-							>
-								HTML
-							</button>
-
-							<div class="toolbar-divider mx-1 h-4 w-px"></div>
-
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleBold().run()}
-								class="dashboard-toolbar-btn font-bold {editor.isActive('bold') ? 'is-active' : ''}"
-								title="加粗"
-							>
-								B
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleItalic().run()}
-								class="dashboard-toolbar-btn italic {editor.isActive('italic') ? 'is-active' : ''}"
-								title="斜体"
-							>
-								I
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleStrike().run()}
-								class="dashboard-toolbar-btn line-through {editor.isActive('strike') ? 'is-active' : ''}"
-								title="删除线"
-							>
-								S
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleCode().run()}
-								class="dashboard-toolbar-btn font-mono {editor.isActive('code') ? 'is-active' : ''}"
-								title="行内代码"
-							>
-								&lt;/&gt;
-							</button>
-							<div class="tooltip" data-tip="插入链接">
-								<button type="button" onclick={insertLink} class="dashboard-toolbar-btn" title="插入链接" aria-label="插入链接">
-									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10a5 5 0 0 1 7.54.54l.92.93a5 5 0 0 1 0 7.07l-3 3a5 5 0 0 1-7.07 0l-1-1m1.61-8.69a5 5 0 0 1-7.07 0l-1-1a5 5 0 0 1 0-7.07l3-3a5 5 0 0 1 7.07 0l.92.93A5 5 0 0 1 11 14"/></svg>
-								</button>
-							</div>
-							<div class="tooltip" data-tip="插入图片">
-								<button type="button" onclick={insertImage} class="dashboard-toolbar-btn" title="插入图片" aria-label="插入图片">
-									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2m3 6h.01M21 15l-5-5L5 21"/></svg>
-								</button>
-							</div>
-							<button type="button" onclick={insertSafeHtml} class="dashboard-toolbar-btn">HTML</button>
-
-							<div class="toolbar-divider mx-1 h-4 w-px"></div>
-
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
-								class="dashboard-toolbar-btn {isEditorActive('heading', { level: 1 }) ? 'is-active font-bold' : ''}"
-								title="一级标题"
-							>
-								H1
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
-								class="dashboard-toolbar-btn {isEditorActive('heading', { level: 2 }) ? 'is-active font-bold' : ''}"
-								title="二级标题"
-							>
-								H2
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}
-								class="dashboard-toolbar-btn {isEditorActive('heading', { level: 3 }) ? 'is-active font-bold' : ''}"
-								title="三级标题"
-							>
-								H3
-							</button>
-
-							<div class="toolbar-divider mx-1 h-4 w-px"></div>
-
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleBulletList().run()}
-								class="dashboard-toolbar-btn {editor.isActive('bulletList') ? 'is-active' : ''}"
-								title="无序列表"
-							>
-								• 无序
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleOrderedList().run()}
-								class="dashboard-toolbar-btn {editor.isActive('orderedList') ? 'is-active' : ''}"
-								title="有序列表"
-							>
-								1. 有序
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleBlockquote().run()}
-								class="dashboard-toolbar-btn {editor.isActive('blockquote') ? 'is-active' : ''}"
-								title="引用块"
-							>
-								“ 引用
-							</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().toggleCodeBlock().run()}
-								class="dashboard-toolbar-btn {editor.isActive('codeBlock') ? 'is-active font-mono' : ''}"
-								title="代码块"
-							>
-								代码块
-							</button>
-
-							<div class="toolbar-divider mx-1 h-4 w-px"></div>
-
-							<div class="relative">
-							    <div class="tooltip" data-tip="文本颜色">
-								<button
-									type="button"
-									class="dashboard-toolbar-btn font-black {activeTextColorState ? 'is-active' : ''}"
-									style={`color:${activeTextColorState || selectedTextColor || 'var(--dashboard-fg)'};`}
-									onclick={toggleTextColorPicker}
-									oncontextmenu={(e) => {
-										e.preventDefault();
-										rememberEditorSelection();
-										syncActiveFormattingState();
-										showTextColorModal = true;
-										showHighlightColorModal = false;
-									}}
-									title="文本颜色"
-								>A</button>
-								</div>
-							</div>
-
-							<div class="relative">
-								<div class="tooltip" data-tip="文字背景色">
-									<button
-										type="button"
-										class="dashboard-toolbar-btn font-black {activeHighlightColorState ? 'is-active' : ''}"
-										style={`background:${activeHighlightColorState || selectedHighlightColor || 'transparent'}; color:${activeHighlightColorState ? '#111' : 'var(--dashboard-fg)'};`}
-										onclick={toggleHighlightColorPicker}
-										oncontextmenu={(e) => {
-											e.preventDefault();
-											rememberEditorSelection();
-											syncActiveFormattingState();
-											showHighlightColorModal = true;
-											showTextColorModal = false;
-										}}
-										title="文字背景色"
-									>A</button>
-								</div>
-							</div>
-
-							<div class="toolbar-divider mx-1 h-4 w-px"></div>
-
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().undo().run()}
-								disabled={!editor.can().chain().focus().undo().run()}
-								class="dashboard-toolbar-btn"
-								title="撤销"
-							>↺</button>
-							<button
-								type="button"
-								onclick={() => editor?.chain().focus().redo().run()}
-								disabled={!editor.can().chain().focus().redo().run()}
-								class="dashboard-toolbar-btn"
-								title="重做"
-							>↻</button>
-									</div>
-								</div>
-							{:else}
+					{#if editor && !isMobileViewport}
+						<div class="editor-toolbar-sticky">
 							<div class="editor-toolbar-overlay">
 							<button
 								type="button"
@@ -4013,7 +3765,6 @@ async function copyPageContent() {
 								</button>
 							</div>
 							</div>
-							{/if}
 						</div>
 					{/if}
 				</div>
@@ -4028,6 +3779,257 @@ async function copyPageContent() {
 	</button>
 
 </div>
+
+{#if editor && isMobileViewport}
+	<div class="dashboard-mobile-toolbar-root">
+		<div class="dashboard-mobile-toolbar-sheet {mobileToolbarExpanded ? 'is-expanded' : ''}">
+			<div class="dashboard-mobile-toolbar-sheet-handle-wrap">
+				<button
+					type="button"
+					class="dashboard-mobile-toolbar-sheet-handle"
+					aria-label={mobileToolbarExpanded ? '收起工具栏' : '展开工具栏'}
+					aria-expanded={mobileToolbarExpanded}
+					onclick={() => (mobileToolbarExpanded = !mobileToolbarExpanded)}
+				>
+					<span class="dashboard-mobile-toolbar-sheet-grabber"></span>
+					<!-- <svg class={`dashboard-mobile-toolbar-arrow ${mobileToolbarExpanded ? 'is-open' : ''}`} xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+						<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 9l6 6l6-6"/>
+					</svg> -->
+				</button>
+			</div>
+			<div class="dashboard-mobile-toolbar-bar">
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleBold().run()}
+					class="dashboard-toolbar-btn font-bold {editor.isActive('bold') ? 'is-active' : ''}"
+					title="加粗"
+				>
+					B
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleItalic().run()}
+					class="dashboard-toolbar-btn italic {editor.isActive('italic') ? 'is-active' : ''}"
+					title="斜体"
+				>
+					I
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleStrike().run()}
+					class="dashboard-toolbar-btn line-through {editor.isActive('strike') ? 'is-active' : ''}"
+					title="删除线"
+				>
+					S
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
+					class="dashboard-toolbar-btn {isEditorActive('heading', { level: 1 }) ? 'is-active font-bold' : ''}"
+					title="一级标题"
+				>
+					H1
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+					class="dashboard-toolbar-btn {isEditorActive('heading', { level: 2 }) ? 'is-active font-bold' : ''}"
+					title="二级标题"
+				>
+					H2
+				</button>
+			</div>
+			<div class="editor-toolbar-overlay is-mobile {mobileToolbarExpanded ? 'is-expanded' : ''}">
+				<button
+					type="button"
+					onclick={() => toggleEditMode('rich')}
+					class="dashboard-mode-toggle {editMode === 'rich' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+				>
+					可视化
+				</button>
+				<button
+					type="button"
+					onclick={() => toggleEditMode('markdown')}
+					class="dashboard-mode-toggle dashboard-mode-toggle-mono {editMode === 'markdown' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+				>
+					Markdown
+				</button>
+				<button
+					type="button"
+					onclick={() => toggleEditMode('html')}
+					class="dashboard-mode-toggle dashboard-mode-toggle-mono {editMode === 'html' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+				>
+					HTML
+				</button>
+
+				<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleBold().run()}
+					class="dashboard-toolbar-btn font-bold {editor.isActive('bold') ? 'is-active' : ''}"
+					title="加粗"
+				>
+					B
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleItalic().run()}
+					class="dashboard-toolbar-btn italic {editor.isActive('italic') ? 'is-active' : ''}"
+					title="斜体"
+				>
+					I
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleStrike().run()}
+					class="dashboard-toolbar-btn line-through {editor.isActive('strike') ? 'is-active' : ''}"
+					title="删除线"
+				>
+					S
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleCode().run()}
+					class="dashboard-toolbar-btn font-mono {editor.isActive('code') ? 'is-active' : ''}"
+					title="行内代码"
+				>
+					&lt;/&gt;
+				</button>
+				<div class="tooltip" data-tip="插入链接">
+					<button type="button" onclick={insertLink} class="dashboard-toolbar-btn" title="插入链接" aria-label="插入链接">
+						<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10a5 5 0 0 1 7.54.54l.92.93a5 5 0 0 1 0 7.07l-3 3a5 5 0 0 1-7.07 0l-1-1m1.61-8.69a5 5 0 0 1-7.07 0l-1-1a5 5 0 0 1 0-7.07l3-3a5 5 0 0 1 7.07 0l.92.93A5 5 0 0 1 11 14"/></svg>
+					</button>
+				</div>
+				<div class="tooltip" data-tip="插入图片">
+					<button type="button" onclick={insertImage} class="dashboard-toolbar-btn" title="插入图片" aria-label="插入图片">
+						<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2m3 6h.01M21 15l-5-5L5 21"/></svg>
+					</button>
+				</div>
+				<button type="button" onclick={insertSafeHtml} class="dashboard-toolbar-btn">HTML</button>
+
+				<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
+					class="dashboard-toolbar-btn {isEditorActive('heading', { level: 1 }) ? 'is-active font-bold' : ''}"
+					title="一级标题"
+				>
+					H1
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+					class="dashboard-toolbar-btn {isEditorActive('heading', { level: 2 }) ? 'is-active font-bold' : ''}"
+					title="二级标题"
+				>
+					H2
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}
+					class="dashboard-toolbar-btn {isEditorActive('heading', { level: 3 }) ? 'is-active font-bold' : ''}"
+					title="三级标题"
+				>
+					H3
+				</button>
+
+				<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleBulletList().run()}
+					class="dashboard-toolbar-btn {editor.isActive('bulletList') ? 'is-active' : ''}"
+					title="无序列表"
+				>
+					• 无序
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleOrderedList().run()}
+					class="dashboard-toolbar-btn {editor.isActive('orderedList') ? 'is-active' : ''}"
+					title="有序列表"
+				>
+					1. 有序
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleBlockquote().run()}
+					class="dashboard-toolbar-btn {editor.isActive('blockquote') ? 'is-active' : ''}"
+					title="引用块"
+				>
+					“ 引用
+				</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().toggleCodeBlock().run()}
+					class="dashboard-toolbar-btn {editor.isActive('codeBlock') ? 'is-active font-mono' : ''}"
+					title="代码块"
+				>
+					代码块
+				</button>
+
+				<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+				<div class="relative">
+					<div class="tooltip" data-tip="文本颜色">
+						<button
+							type="button"
+							class="dashboard-toolbar-btn font-black {activeTextColorState ? 'is-active' : ''}"
+							style={`color:${activeTextColorState || selectedTextColor || 'var(--dashboard-fg)'};`}
+							onclick={toggleTextColorPicker}
+							oncontextmenu={(e) => {
+								e.preventDefault();
+								rememberEditorSelection();
+								syncActiveFormattingState();
+								showTextColorModal = true;
+								showHighlightColorModal = false;
+							}}
+							title="文本颜色"
+						>A</button>
+					</div>
+				</div>
+
+				<div class="relative">
+					<div class="tooltip" data-tip="文字背景色">
+						<button
+							type="button"
+							class="dashboard-toolbar-btn font-black {activeHighlightColorState ? 'is-active' : ''}"
+							style={`background:${activeHighlightColorState || selectedHighlightColor || 'transparent'}; color:${activeHighlightColorState ? '#111' : 'var(--dashboard-fg)'};`}
+							onclick={toggleHighlightColorPicker}
+							oncontextmenu={(e) => {
+								e.preventDefault();
+								rememberEditorSelection();
+								syncActiveFormattingState();
+								showHighlightColorModal = true;
+								showTextColorModal = false;
+							}}
+							title="文字背景色"
+						>A</button>
+					</div>
+				</div>
+
+				<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().undo().run()}
+					disabled={!editor.can().chain().focus().undo().run()}
+					class="dashboard-toolbar-btn"
+					title="撤销"
+				>↺</button>
+				<button
+					type="button"
+					onclick={() => editor?.chain().focus().redo().run()}
+					disabled={!editor.can().chain().focus().redo().run()}
+					class="dashboard-toolbar-btn"
+					title="重做"
+				>↻</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 {#if activeDocMenuId !== null}
 	<div class="doc-menu-backdrop" onclick={closeDocMenu}></div>
@@ -4589,19 +4591,19 @@ async function copyPageContent() {
 	<div class="dashboard-modal-backdrop">
 		<div class="dashboard-modal-box dashboard-modal-medium">
 			<h3 class="dashboard-modal-title">初始化文档加密</h3>
-			<div class="dashboard-helper-text">
+			<div class="dashboard-helper-text my-0.5">
 				为了保护你的私有文章，Amnesia 会在文档上传前先在浏览器本地完成加密，再把密文存进数据库。
 			</div>
-			<div class="dashboard-helper-text">
+			<div class="dashboard-helper-text my-0.5">
 				目前的逻辑是：先使用你的登录密码通过本地派生逻辑生成文档密钥，再用 Web Crypto API 的 <strong>AES-GCM</strong> 算法对私有文章内容加密；数据库里保存的是密文、随机 IV 和版本信息，而不是可直接阅读的正文。
 			</div>
-			<div class="dashboard-helper-text">
+			<div class="dashboard-helper-text my-0.5">
 				之所以这样做，是因为我不想在数据库里直接看到其他用户的私人文章内容，所以即使我去翻数据库，也看不到你的正文实际内容。
 			</div>
-			<div class="dashboard-helper-text">
+			<div class="dashboard-helper-text my-0.5">
 				这意味着你的私有文章默认会以“先本地加密、再上传”的方式保存；只有输入正确的登录密码，浏览器才能重新派生出同一把密钥并解密内容。这个初始化只允许设置一次，之后无法修改。你可以随时导出你的文章（以已解密或者加密的形式）。请确认你已经理解这个机制。
 			</div>
-			<div class="dashboard-helper-text">
+			<div class="dashboard-helper-text my-0.5">
 				请输入你当前账号的登录密码来确认并生成文档加密密钥。如果以后忘记登录密码，私有文章内容也会随之无法恢复，请务必自行保管好密码。
 			</div>
 			<div class="dashboard-field">
@@ -5930,14 +5932,24 @@ async function copyPageContent() {
 		pointer-events: none;
 	}
 
-	.editor-toolbar-sticky.is-mobile {
+	.dashboard-mobile-toolbar-root {
 		position: fixed;
 		right: 0;
 		bottom: 0;
 		left: 0;
 		z-index: 36;
-		margin-top: 0;
-		padding: 0;
+		pointer-events: none;
+	}
+
+	.dashboard-mobile-toolbar-root::before {
+		content: '';
+		position: absolute;
+		right: 0;
+		bottom: calc(100% - 1px);
+		left: 0;
+		height: 1.5rem;
+		background: linear-gradient(180deg, transparent, color-mix(in oklab, var(--dashboard-bg) 78%, transparent));
+		pointer-events: none;
 	}
 
 	.dashboard-mobile-toolbar-sheet {
@@ -6777,7 +6789,7 @@ async function copyPageContent() {
 		.dashboard-main > :global(div.mx-auto.w-full.max-w-4xl) {
 			transform: none;
 			padding-top: 1rem;
-			padding-bottom: 7.5rem;
+			padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8.75rem);
 		}
 
 		.dashboard-page-title {
@@ -6817,7 +6829,7 @@ async function copyPageContent() {
 			grid-template-columns: minmax(0, 1fr);
 			gap: 1rem;
 			min-height: 0;
-			padding-bottom: 8rem;
+			padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 9rem);
 		}
 
 		.markdown-preview {
@@ -6827,7 +6839,10 @@ async function copyPageContent() {
 
 		.dashboard-empty-state,
 		.dashboard-main > :global(div.mx-auto.flex.h-full.max-w-3xl) {
-			padding: 2rem 1.2rem 7rem;
+			padding:
+				2rem
+				1.2rem
+				calc(env(safe-area-inset-bottom, 0px) + 8.25rem);
 		}
 
 		.dashboard-modal-backdrop {
