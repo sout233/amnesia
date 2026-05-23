@@ -35,8 +35,7 @@
 		EditorView,
 		lineNumbers,
 		highlightActiveLineGutter,
-		keymap,
-		scrollPastEnd
+		keymap
 	} from '@codemirror/view';
 	import { markdown as markdownLanguage } from '@codemirror/lang-markdown';
 
@@ -111,6 +110,12 @@
 		created_at?: string;
 		updated_at?: string;
 		author?: string;
+	};
+
+	type DocSettings = Record<string, unknown> & {
+		isLocked?: boolean;
+		lockedByUserId?: string | number | null;
+		lockedAt?: string | null;
 	};
 
 	let sidebarNode = $state<HTMLElement | null>(null);
@@ -264,6 +269,14 @@
 		order: number;
 		placeholderDocId?: number;
 	};
+	type AmTablePayload = {
+		header: string[][];
+		rows: string[][];
+	};
+	type AmTaskItemPayload = {
+		checked: boolean;
+		content: string;
+	};
 
 	type ThemeConfig = {
 		name: ThemePreset;
@@ -305,7 +318,7 @@
 		codeBlockStyle: 'fenced'
 	});
 
-	(turndownService as unknown as {
+	const turndownServiceWithRules = turndownService as unknown as {
 		addRule: (
 			key: string,
 			rule: {
@@ -313,12 +326,105 @@
 				replacement: (content: string, node: Node) => string;
 			}
 		) => void;
-	}).addRule('preserveInlineStyledNodes', {
+	};
+
+	turndownServiceWithRules.addRule('amnesiaRawHtmlEmbed', {
+		filter: (node: Node) => node instanceof HTMLElement && node.hasAttribute('data-html-embed-block'),
+		replacement: (_content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return '';
+			const rawHtml = node.dataset.rawHtml || '';
+			return `\n\n:::am-html\n${rawHtml.trim()}\n:::\n\n`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('amnesiaTable', {
+		filter: (node: Node) => node instanceof HTMLElement && node.tagName === 'TABLE',
+		replacement: (_content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return '';
+			const payload = serializeAmTableFromNode(node);
+			return `\n\n:::am-table\n${encodeAmBlockPayload(payload)}\n:::\n\n`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('amnesiaTaskList', {
 		filter: (node: Node) =>
 			node instanceof HTMLElement &&
-			(node.hasAttribute('data-inline-styled') ||
-				node.tagName === 'MARK' ||
-				(node.tagName === 'SPAN' && node.hasAttribute('style'))),
+			node.tagName === 'UL' &&
+			node.getAttribute('data-type') === 'taskList',
+		replacement: (_content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return '';
+			const payload = serializeAmTaskListFromNode(node);
+			return `\n\n:::am-tasklist\n${encodeAmBlockPayload(payload)}\n:::\n\n`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('amnesiaMention', {
+		filter: (node: Node) =>
+			node instanceof HTMLElement &&
+			node.tagName === 'A' &&
+			node.getAttribute('data-type') === 'mention' &&
+			node.hasAttribute('data-doc-id'),
+		replacement: (_content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return '';
+			const docId = node.getAttribute('data-doc-id') || '';
+			const label = node.getAttribute('data-label') || node.textContent?.replace(/^@/, '') || docId;
+			return `[[am-doc:${docId}|${label}]]`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('amnesiaImage', {
+		filter: (node: Node) => node instanceof HTMLElement && node.tagName === 'IMG' && node.hasAttribute('src'),
+		replacement: (_content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return '';
+			const src = node.getAttribute('src') || '';
+			const alt = node.getAttribute('alt') || '';
+			return `![[am-img:${alt}|${src}]]`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('amnesiaLink', {
+		filter: (node: Node) =>
+			node instanceof HTMLElement &&
+			node.tagName === 'A' &&
+			node.getAttribute('data-type') !== 'mention' &&
+			node.hasAttribute('href'),
+		replacement: (content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return content;
+			const href = node.getAttribute('href') || '';
+			return `[[am-link:${href}|${content || href}]]`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('amnesiaTextColor', {
+		filter: (node: Node) =>
+			node instanceof HTMLElement &&
+			node.tagName === 'SPAN' &&
+			Boolean(node.style.color),
+		replacement: (content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return content;
+			const color = node.style.color?.trim();
+			if (!color) return content;
+			return `{{am-color:${color}}}${content}{{/am-color}}`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('amnesiaHighlight', {
+		filter: (node: Node) =>
+			node instanceof HTMLElement &&
+			node.tagName === 'MARK' &&
+			Boolean(node.style.backgroundColor || node.getAttribute('data-color')),
+		replacement: (content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return content;
+			const color = node.style.backgroundColor?.trim() || node.getAttribute('data-color')?.trim() || '';
+			if (!color) return content;
+			return `{{am-bg:${color}}}${content}{{/am-bg}}`;
+		}
+	});
+
+	turndownServiceWithRules.addRule('preserveInlineStyledNodes', {
+		filter: (node: Node) =>
+			node instanceof HTMLElement &&
+			node.getAttribute('data-inline-styled') === 'fallback',
 		replacement: (_content: string, node: Node) => (node as HTMLElement).outerHTML
 	});
 
@@ -476,7 +582,6 @@
 										<span class="mention-command-emoji">${item.emoji}</span>
 										<span class="mention-command-copy">
 											<span class="mention-command-title">${item.title}</span>
-											<span class="mention-command-meta">点击后跳转到该页面</span>
 										</span>
 									</span>
 									<span class="mention-command-shortcut">@</span>
@@ -1523,6 +1628,44 @@
 		return '私有';
 	}
 
+	function getDocSettings(doc?: DocRecord | null): DocSettings {
+		return ((doc?.settings ?? {}) as DocSettings) || {};
+	}
+
+	function isDocLocked(doc?: DocRecord | null) {
+		return !!getDocSettings(doc).isLocked;
+	}
+
+	function isDocOwner(doc?: DocRecord | null) {
+		const currentUserId = userState.session?.user?.id;
+		if (!doc || currentUserId === undefined || currentUserId === null) return false;
+		return String(doc.owner_user_id ?? '') === String(currentUserId);
+	}
+
+	function canCurrentUserEditDoc(doc?: DocRecord | null) {
+		if (!doc) return false;
+		if (!isDocLocked(doc)) return true;
+		return isDocOwner(doc);
+	}
+
+	function syncDocLockState(doc?: DocRecord | null) {
+		lockPage = doc ? !canCurrentUserEditDoc(doc) : false;
+	}
+
+	function buildDocLockSettings(nextLocked: boolean, doc?: DocRecord | null): DocSettings {
+		const settings = { ...getDocSettings(doc) };
+		if (!nextLocked) {
+			delete settings.isLocked;
+			delete settings.lockedByUserId;
+			delete settings.lockedAt;
+			return settings;
+		}
+		settings.isLocked = true;
+		settings.lockedByUserId = userState.session?.user?.id ?? null;
+		settings.lockedAt = new Date().toISOString();
+		return settings;
+	}
+
 	function stripHtmlToText(html: string) {
 		if (typeof document === 'undefined') return html;
 		const temp = document.createElement('div');
@@ -1685,6 +1828,14 @@
 				content: '<p>文档解密失败，当前密钥可能与创建时不一致。</p>'
 			};
 		}
+	}
+
+	function ensureEditableDocOrToast() {
+		const currentDoc = docs[activeDocIndex];
+		if (!currentDoc) return false;
+		if (canCurrentUserEditDoc(currentDoc)) return true;
+		toast.warning('这个页面已被创建者锁定，当前仅创建者可以修改。');
+		return false;
 	}
 
 	async function loadTeamsForCurrentUser() {
@@ -1858,8 +2009,7 @@
 				pagePaddingX,
 				docFontSize,
 				docFontFamily,
-				globalUiFont,
-				lockPage
+				globalUiFont
 			})
 		);
 	}
@@ -1875,7 +2025,6 @@
 			docFontSize = parsed.docFontSize ?? docFontSize;
 			docFontFamily = parsed.docFontFamily ?? docFontFamily;
 			globalUiFont = parsed.globalUiFont ?? globalUiFont;
-			lockPage = parsed.lockPage ?? lockPage;
 		} catch {
 			// ignore malformed local settings
 		}
@@ -1897,21 +2046,124 @@
 			.replaceAll('>', '&gt;');
 	}
 
+	function escapeHtmlText(value: string) {
+		return value
+			.replaceAll('&', '&amp;')
+			.replaceAll('<', '&lt;')
+			.replaceAll('>', '&gt;');
+	}
+
+	function normalizeAmColorValue(value: string) {
+		return value.replaceAll('&quot;', '"').trim();
+	}
+
+	function encodeAmBlockPayload(payload: unknown) {
+		if (typeof btoa === 'function') {
+			return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+		}
+		return JSON.stringify(payload);
+	}
+
+	function decodeAmBlockPayload<T>(payload: string, fallback: T): T {
+		try {
+			if (typeof atob === 'function') {
+				return JSON.parse(decodeURIComponent(escape(atob(payload)))) as T;
+			}
+			return JSON.parse(payload) as T;
+		} catch {
+			return fallback;
+		}
+	}
+
+	function serializeAmTableFromNode(tableNode: HTMLElement): AmTablePayload {
+		const header = Array.from(tableNode.querySelectorAll('thead tr')).map((row) =>
+			Array.from(row.querySelectorAll('th')).map((cell) => cell.innerHTML.trim())
+		);
+		const rows = Array.from(tableNode.querySelectorAll('tbody tr')).map((row) =>
+			Array.from(row.querySelectorAll('td')).map((cell) => cell.innerHTML.trim())
+		);
+		return { header, rows };
+	}
+
+	function renderAmTableHtml(payload: AmTablePayload) {
+		const thead =
+			payload.header.length > 0
+				? `<thead>${payload.header
+						.map(
+							(row) =>
+								`<tr>${row.map((cell) => `<th>${cell || '<p></p>'}</th>`).join('')}</tr>`
+						)
+						.join('')}</thead>`
+				: '';
+		const tbody = `<tbody>${payload.rows
+			.map((row) => `<tr>${row.map((cell) => `<td>${cell || '<p></p>'}</td>`).join('')}</tr>`)
+			.join('')}</tbody>`;
+		return `<div class="tableWrapper"><table>${thead}${tbody}</table></div>`;
+	}
+
+	function serializeAmTaskListFromNode(listNode: HTMLElement): AmTaskItemPayload[] {
+		return Array.from(listNode.querySelectorAll(':scope > li')).map((item) => {
+			const checked = item.getAttribute('data-checked') === 'true';
+			const contentNode = item.querySelector(':scope > div');
+			return {
+				checked,
+				content: contentNode instanceof HTMLElement ? contentNode.innerHTML.trim() : '<p></p>'
+			};
+		});
+	}
+
+	function renderAmTaskListHtml(payload: AmTaskItemPayload[]) {
+		const items = payload
+			.map((item) => {
+				const checked = item.checked ? 'true' : 'false';
+				return `<li data-checked="${checked}"><label contenteditable="false"><input type="checkbox" ${item.checked ? 'checked' : ''}></label><div>${item.content || '<p></p>'}</div></li>`;
+			})
+			.join('');
+		return `<ul data-type="taskList">${items}</ul>`;
+	}
+
+	function markdownToAmnesiaHtml(markdown: string) {
+		return markdown
+			.replace(/:::\s*am-html\s*\n([\s\S]*?)\n:::/g, (_match, rawHtml: string) => {
+				const sanitized = sanitizeHtml(rawHtml.trim());
+				return `<div data-html-embed-block="true" data-raw-html="${escapeHtmlAttribute(sanitized)}"></div>`;
+			})
+			.replace(/:::\s*am-table\s*\n([\s\S]*?)\n:::/g, (_match, payload: string) => {
+				const decoded = decodeAmBlockPayload<AmTablePayload>(payload.trim(), { header: [], rows: [] });
+				return renderAmTableHtml(decoded);
+			})
+			.replace(/:::\s*am-tasklist\s*\n([\s\S]*?)\n:::/g, (_match, payload: string) => {
+				const decoded = decodeAmBlockPayload<AmTaskItemPayload[]>(payload.trim(), []);
+				return renderAmTaskListHtml(decoded);
+			})
+			.replace(/\[\[am-doc:([^|\]]+)\|([^\]]+)\]\]/g, (_match, docId: string, label: string) => {
+				const safeId = docId.trim();
+				const safeLabel = label.trim();
+				return `<a href="${escapeHtmlAttribute(buildMentionHref(safeId))}" data-doc-id="${escapeHtmlAttribute(safeId)}" data-label="${escapeHtmlAttribute(safeLabel)}" data-type="mention">@${escapeHtmlText(safeLabel)}</a>`;
+			})
+			.replace(/!\[\[am-img:([^|\]]*)\|([^\]]+)\]\]/g, (_match, alt: string, src: string) => {
+				return `<img src="${escapeHtmlAttribute(src.trim())}" alt="${escapeHtmlAttribute(alt.trim())}">`;
+			})
+			.replace(/\[\[am-link:([^|\]]+)\|([^\]]+)\]\]/g, (_match, href: string, label: string) => {
+				const safeHref = href.trim();
+				return `<a href="${escapeHtmlAttribute(safeHref)}" target="_blank">${escapeHtmlText(label.trim())}</a>`;
+			})
+			.replace(/\{\{am-color:([^}]+)\}\}([\s\S]*?)\{\{\/am-color\}\}/g, (_match, color: string, content: string) => {
+				return `<span style="color:${escapeHtmlAttribute(normalizeAmColorValue(color))}">${content}</span>`;
+			})
+			.replace(/\{\{am-bg:([^}]+)\}\}([\s\S]*?)\{\{\/am-bg\}\}/g, (_match, color: string, content: string) => {
+				const normalized = normalizeAmColorValue(color);
+				return `<mark data-color="${escapeHtmlAttribute(normalized)}" style="background-color:${escapeHtmlAttribute(normalized)}">${content}</mark>`;
+			});
+	}
+
 	function htmlToMarkdownSource(html: string) {
 		if (typeof document === 'undefined') return html;
 		const temp = document.createElement('div');
 		temp.innerHTML = html;
 		temp.querySelectorAll('[style*="color"], mark[style], span[style]').forEach((node) => {
 			if (!(node instanceof HTMLElement)) return;
-			node.dataset.inlineStyled = 'true';
-		});
-		temp.querySelectorAll('[data-html-embed-block]').forEach((node) => {
-			if (!(node instanceof HTMLElement)) return;
-			const raw = node.dataset.rawHtml || '';
-			const wrapper = document.createElement('div');
-			wrapper.dataset.inlineStyled = 'true';
-			wrapper.innerHTML = raw;
-			node.replaceWith(wrapper);
+			node.dataset.inlineStyled = 'fallback';
 		});
 		return turndownService.turndown(temp.innerHTML);
 	}
@@ -1985,8 +2237,9 @@
 					highlightActiveLineGutter(),
 					markdownLanguage(),
 					EditorView.lineWrapping,
-					scrollPastEnd(),
 					preserveTrailingBlankLinesKeymap,
+					EditorState.readOnly.of(lockPage),
+					EditorView.editable.of(!lockPage),
 					keymap.of([
 						{ key: 'Mod-z', run: undoSelection, preventDefault: true },
 						{ key: 'Mod-y', run: redoSelection, preventDefault: true },
@@ -1995,7 +2248,7 @@
 					EditorView.updateListener.of(async (update) => {
 						if (!update.docChanged) return;
 						markdownContent = update.state.doc.toString();
-						markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownContent));
+						markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownToAmnesiaHtml(markdownContent)));
 						markdownDirty = true;
 					})
 				]
@@ -2019,7 +2272,8 @@
 					lineNumbers(),
 					highlightActiveLineGutter(),
 					EditorView.lineWrapping,
-					scrollPastEnd(),
+					EditorState.readOnly.of(lockPage),
+					EditorView.editable.of(!lockPage),
 					keymap.of([
 						{ key: 'Mod-z', run: undoSelection, preventDefault: true },
 						{ key: 'Mod-y', run: redoSelection, preventDefault: true },
@@ -2417,6 +2671,40 @@
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
+	async function toggleActiveDocLock(nextLocked: boolean) {
+		const currentDoc = docs[activeDocIndex];
+		if (!currentDoc) return;
+		if (!isDocOwner(currentDoc)) {
+			toast.warning('只有页面创建者可以修改锁定状态。');
+			return;
+		}
+		try {
+			const nextSettings = buildDocLockSettings(nextLocked, currentDoc);
+			const updated = await updateDoc({
+				id: currentDoc.id,
+				settings: nextSettings
+			});
+			docs[activeDocIndex] = {
+				...docs[activeDocIndex],
+				settings: updated.settings ?? nextSettings,
+				updated_at: updated.updated_at ?? docs[activeDocIndex].updated_at
+			};
+			syncDocLockState(docs[activeDocIndex]);
+			if (editMode === 'markdown') {
+				await tick();
+				initMarkdownEditor();
+			}
+			if (editMode === 'html') {
+				await tick();
+				initHtmlEditor();
+			}
+			toast.success(nextLocked ? '页面已锁定，只有创建者可以修改。' : '页面已解锁。');
+		} catch {
+			syncDocLockState(currentDoc);
+			toast.error('更新页面锁定状态失败');
+		}
+	}
+
 	function openTeamWorkspaceModal() {
 		mobileSidebarOpen = false;
 		showTeamWorkspaceModal = true;
@@ -2537,7 +2825,8 @@
 		toast.success('文档已删除');
 	}
 
-	async function updateDocEmoji() {
+async function updateDocEmoji() {
+		if (!ensureEditableDocOrToast()) return;
 		const currentDoc = docs[activeDocIndex];
 		if (!currentDoc || !customEmojiInput.trim()) return;
 		currentDoc.emoji = customEmojiInput.trim();
@@ -2547,6 +2836,7 @@
 	}
 
 	function insertLink() {
+		if (!ensureEditableDocOrToast()) return;
 		linkUrlInput = editor?.getAttributes('link')?.href ?? '';
 		linkTextInput = editor?.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ') ?? '';
 		showLinkModal = true;
@@ -2554,18 +2844,21 @@
 	}
 
 	function insertImage() {
+		if (!ensureEditableDocOrToast()) return;
 		imageUrlInput = '';
 		showImageModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function insertSafeHtml() {
+		if (!ensureEditableDocOrToast()) return;
 		htmlEmbedInput = '';
 		showHtmlModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function confirmInsertLink() {
+		if (!ensureEditableDocOrToast()) return;
 		if (!editor || !linkUrlInput.trim()) return;
 		const chain = editor.chain().focus();
 		if (editor.state.selection.empty && linkTextInput.trim()) {
@@ -2576,12 +2869,14 @@
 	}
 
 	function confirmInsertImageUrl() {
+		if (!ensureEditableDocOrToast()) return;
 		if (!editor || !imageUrlInput.trim()) return;
 		editor.chain().focus().setImage({ src: imageUrlInput.trim(), alt: 'image' }).run();
 		showImageModal = false;
 	}
 
 	function confirmInsertSafeHtml() {
+		if (!ensureEditableDocOrToast()) return;
 		if (!editor || !htmlEmbedInput.trim()) return;
 		const sanitizedHtml = sanitizeHtml(htmlEmbedInput.trim());
 		if (!sanitizedHtml.trim()) {
@@ -2603,22 +2898,27 @@
 	}
 
 	function toggleTaskListBlock() {
+		if (!ensureEditableDocOrToast()) return;
 		editor?.chain().focus().toggleTaskList().run();
 	}
 
 	function insertBasicTable() {
+		if (!ensureEditableDocOrToast()) return;
 		editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
 	}
 
 	function addTableRowAfter() {
+		if (!ensureEditableDocOrToast()) return;
 		editor?.chain().focus().addRowAfter().run();
 	}
 
 	function addTableColumnAfter() {
+		if (!ensureEditableDocOrToast()) return;
 		editor?.chain().focus().addColumnAfter().run();
 	}
 
 	async function handleImageFileUpload(file: File) {
+		if (!ensureEditableDocOrToast()) return;
 		if (!file.type.startsWith('image/')) {
 			toast.error('只能上传图片文件');
 			return;
@@ -2635,7 +2935,7 @@
 	}
 
 	function applyTextColor(color: string) {
-		if (lockPage) return;
+		if (!ensureEditableDocOrToast()) return;
 		selectedTextColor = color;
 		restoreEditorSelection();
 		editor?.chain().setColor(color).run();
@@ -2643,7 +2943,7 @@
 	}
 
 	function applyHighlightColor(color: string) {
-		if (lockPage) return;
+		if (!ensureEditableDocOrToast()) return;
 		selectedHighlightColor = color;
 		restoreEditorSelection();
 		editor?.chain().setHighlight({ color }).run();
@@ -2651,7 +2951,7 @@
 	}
 
 	function resetTextColor() {
-		if (lockPage) return;
+		if (!ensureEditableDocOrToast()) return;
 		restoreEditorSelection();
 		editor?.chain().unsetColor().run();
 		activeTextColorState = '';
@@ -2659,7 +2959,7 @@
 	}
 
 	function resetHighlightColor() {
-		if (lockPage) return;
+		if (!ensureEditableDocOrToast()) return;
 		restoreEditorSelection();
 		editor?.chain().unsetHighlight().run();
 		activeHighlightColorState = '';
@@ -2711,7 +3011,7 @@ async function importMarkdownFile(e: Event) {
 	const file = (e.currentTarget as HTMLInputElement).files?.[0];
 	if (!file) return;
 	markdownContent = await file.text();
-	markdownPreviewHtml = await marked.parse(markdownContent);
+	markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownToAmnesiaHtml(markdownContent)));
 	if (editMode === 'rich') {
 		await applyMarkdownToEditor(markdownContent);
 	} else if (editMode === 'html') {
@@ -2930,12 +3230,8 @@ async function copyPageContent() {
 	async function applyMarkdownToEditor(markdown: string) {
 		if (!editor || !docs[activeDocIndex]) return;
 
-		const parsed = await marked.parse(markdown);
-		const normalizedHtml = sanitizeHtml(parsed).replace(
-			/<div([^>]*?)data-inline-styled="true"([^>]*)>([\s\S]*?)<\/div>/gi,
-			(_match, beforeAttrs, afterAttrs, innerHtml) =>
-				`<div data-html-embed-block="true" data-raw-html="${escapeHtmlAttribute(innerHtml)}"${beforeAttrs}${afterAttrs}></div>`
-		);
+		const parsed = await marked.parse(markdownToAmnesiaHtml(markdown));
+		const normalizedHtml = sanitizeHtml(parsed);
 		editor.commands.setContent(normalizedHtml, { emitUpdate: false });
 		docs[activeDocIndex].content = editor.getHTML();
 		htmlContent = docs[activeDocIndex].content;
@@ -2949,7 +3245,7 @@ async function copyPageContent() {
 	async function handleMarkdownInput(e: Event) {
 		const target = e.currentTarget as HTMLTextAreaElement;
 		markdownContent = target.value;
-		markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownContent));
+		markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownToAmnesiaHtml(markdownContent)));
 		markdownDirty = true;
 	}
 
@@ -3052,6 +3348,7 @@ async function copyPageContent() {
 	}
 
 	function runSlashCommand(command: (typeof slashCommands)[number]) {
+		if (!ensureEditableDocOrToast()) return;
 		clearSlashTrigger();
 		command.run();
 		hideCommandMenu();
@@ -3239,6 +3536,7 @@ async function copyPageContent() {
 
 		const currentDoc = docs[index];
 		if (currentDoc) {
+			syncDocLockState(currentDoc);
 			// 同步更新大标题的 DOM，避免 Svelte 重绘丢失 contenteditable 的光标位置
 			if (titleNode) {
 				titleNode.innerText = currentDoc.title;
@@ -3258,6 +3556,12 @@ async function copyPageContent() {
 
 	// 标题输入响应
 	function handleTitleInput(e: Event) {
+		if (!ensureEditableDocOrToast()) {
+			if (titleNode && docs[activeDocIndex]) {
+				titleNode.innerText = docs[activeDocIndex].title;
+			}
+			return;
+		}
 		const target = e.currentTarget as HTMLElement;
 		const newTitle = target.innerText;
 		if (docs[activeDocIndex]) {
@@ -3303,6 +3607,7 @@ async function copyPageContent() {
 		// 2. 初始化 Tiptap 编辑器
 		const initialDoc = docs[activeDocIndex];
 		if (initialDoc && editorNode) {
+			syncDocLockState(initialDoc);
 			if (titleNode) {
 				titleNode.innerText = initialDoc.title;
 			}
@@ -3322,6 +3627,7 @@ async function copyPageContent() {
 					Highlight.configure({ multicolor: true }),
 					Link.configure({ openOnClick: false }),
 					Image,
+					RawHtmlEmbed,
 					TaskList,
 					TaskItem.configure({ nested: true }),
 					Table.configure({
@@ -3355,6 +3661,7 @@ async function copyPageContent() {
 						class: 'tiptap',
 						style: `font-size:${docFontSize}px; --dashboard-doc-font:${docFontFamily};`
 					},
+					editable: () => !lockPage,
 					handleDOMEvents: {
 						contextmenu: (_view, event) => {
 							const target = event.target;
@@ -3381,6 +3688,7 @@ async function copyPageContent() {
 					}
 				},
 				onUpdate: ({ editor }) => {
+					if (!canCurrentUserEditDoc(docs[activeDocIndex])) return;
 					if (docs[activeDocIndex]) {
 						docs[activeDocIndex].content = editor.getHTML();
 						htmlContent = docs[activeDocIndex].content;
@@ -4065,6 +4373,11 @@ async function copyPageContent() {
 
 				<div class="mb-5 flex items-center gap-3 text-xs dashboard-muted">
 					<span class="dashboard-chip px-2.5 py-1 font-semibold">/{activeDoc?.category || '未分类'}</span>
+					{#if activeDoc && isDocLocked(activeDoc)}
+						<span class="dashboard-chip dashboard-lock-chip px-2.5 py-1 font-semibold">
+							{isDocOwner(activeDoc) ? '你已锁定此页面' : '此页面已被创建者锁定'}
+						</span>
+					{/if}
 					<span>
 						创建于 {formatCompactDate(activeDoc?.created_at)} · 更新于 {formatCompactDate(activeDoc?.updated_at)}
 					</span>
@@ -5051,6 +5364,9 @@ async function copyPageContent() {
 				<span class="dashboard-field-label">HTML 代码</span>
 				<textarea bind:value={htmlEmbedInput} class="dashboard-input dashboard-textarea" rows="8" placeholder="<iframe ...></iframe>"></textarea>
 			</div>
+			<div class="dashboard-helper-text">
+				插入后会作为安全嵌入块保存；切到 Markdown 模式时会显示成 `:::am-html ... :::`。
+			</div>
 			<div class="dashboard-modal-actions">
 				<button type="button" class="dashboard-btn dashboard-btn-subtle" onclick={() => showHtmlModal = false}>取消</button>
 				<button type="button" class="dashboard-btn dashboard-btn-primary" onclick={confirmInsertSafeHtml}>插入</button>
@@ -5196,10 +5512,10 @@ async function copyPageContent() {
 		<div class="dashboard-modal-box dashboard-modal-medium">
 			<h3 class="dashboard-modal-title">切换到 Markdown 编辑</h3>
 			<div class="dashboard-helper-text">
-				格式可能无法完全转换。颜色、高亮和部分自定义 HTML 结构在 Markdown 模式下可能会丢失。
+				这里使用的是 Amnesia 扩展 Markdown。大部分常见内容都能双向转换，颜色、高亮、提及和自定义 HTML 会用特殊标记保留。
 			</div>
 			<div class="dashboard-helper-text">
-				如果继续，我们会尽量把当前文章转成 Markdown；你编辑完成后，再把 Markdown 重新转换成 HTML 文档。
+				它不追求完全符合标准 Markdown 规范，而是优先保证和可视化 / HTML 模式之间的兼容性。
 			</div>
 			<div class="dashboard-helper-text">
 				进入 Markdown 模式后不会自动保存，修改完成后需要你手动点“保存”。
@@ -5443,9 +5759,28 @@ async function copyPageContent() {
 					/>
 				</label>
 				<label class="dashboard-checkbox-row">
-					<input type="checkbox" class="dashboard-checkbox" bind:checked={lockPage} onchange={persistDashboardSettings} />
-					<span>锁定页面，防止修改</span>
+					<input
+						type="checkbox"
+						class="dashboard-checkbox"
+						checked={!!activeDoc && isDocLocked(activeDoc)}
+						disabled={!activeDoc || !isDocOwner(activeDoc)}
+						onchange={(e) => toggleActiveDocLock((e.currentTarget as HTMLInputElement).checked)}
+					/>
+					<span>锁定页面，仅创建者可修改</span>
 				</label>
+				<div class="dashboard-helper-text">
+					{#if activeDoc}
+						{#if isDocOwner(activeDoc)}
+							锁定后，无论是全局文章、团队文章还是私有文章，都只有你这个创建者可以继续编辑。
+						{:else if isDocLocked(activeDoc)}
+							这个页面已被创建者锁定，你当前只能查看，不能修改。
+						{:else}
+							只有页面创建者可以切换锁定状态。
+						{/if}
+					{:else}
+						请先打开一个页面。
+					{/if}
+				</div>
 				<div class="dashboard-field">
 					<div class="dashboard-field-label">页面操作</div>
 					<div class="dashboard-action-row">
@@ -5821,6 +6156,12 @@ async function copyPageContent() {
 
 	.dashboard-user-logout-btn {
 		margin-right: auto;
+	}
+
+	.dashboard-lock-chip {
+		border-color: color-mix(in oklab, oklch(0.72 0.12 85) 32%, var(--dashboard-border));
+		background: color-mix(in oklab, oklch(0.72 0.12 85) 14%, var(--dashboard-panel));
+		color: color-mix(in oklab, oklch(0.58 0.1 85) 72%, var(--dashboard-fg));
 	}
 
 	.status-dot {
@@ -6564,12 +6905,14 @@ async function copyPageContent() {
 	}
 
 	.markdown-editor-host {
-		min-height: 480px;
-		padding-bottom: 5.5rem;
+		min-height: 0;
+		height: 100%;
+		overflow: hidden;
 	}
 
 	:global(.cm-editor) {
 		height: 100%;
+		min-height: 100%;
 		background: transparent;
 		font: 500 14px/1.85 "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
 		color: var(--dashboard-fg);
@@ -6582,12 +6925,15 @@ async function copyPageContent() {
 	}
 
 	:global(.cm-scroller) {
+		height: 100%;
+		overflow: auto;
 		font-family: "JetBrains Mono", monospace;
 	}
 
 	.editor-shell {
 		position: relative;
 		padding: 0.1rem 0 0.3rem 0.2rem;
+		min-height: 0;
 	}
 
 	.block-drop-indicator {
@@ -7148,6 +7494,27 @@ async function copyPageContent() {
 		text-decoration-thickness: 1.5px;
 	}
 
+	:global(.tiptap .raw-html-embed-shell) {
+		position: relative;
+		margin: 1rem 0;
+		border: 1px solid color-mix(in oklab, var(--dashboard-fg) 10%, transparent);
+		border-radius: 1rem;
+		background: color-mix(in oklab, var(--dashboard-panel) 92%, transparent);
+		overflow: hidden;
+	}
+
+	:global(.tiptap .raw-html-embed-render) {
+		position: relative;
+		min-height: 8rem;
+	}
+
+	:global(.tiptap .raw-html-embed-render iframe) {
+		display: block;
+		width: 100%;
+		min-height: 24rem;
+		border: 0;
+	}
+
 	:global(.tiptap .tableWrapper) {
 		/*margin: 1.25rem 0;*/
 		overflow-x: auto;
@@ -7639,13 +8006,18 @@ async function copyPageContent() {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
 		gap: 2rem;
+		height: min(70vh, 880px);
 		min-height: 480px;
-		padding-bottom: 5.5rem;
+		max-height: calc(100dvh - 16rem);
+		padding-bottom: 1.5rem;
+		overflow: hidden;
 	}
 
 	.markdown-preview {
 		min-width: 0;
 		padding-left: 2rem;
+		height: 100%;
+		overflow: auto;
 	}
 
 	.markdown-preview-label {
@@ -7813,13 +8185,18 @@ async function copyPageContent() {
 		.markdown-split-view {
 			grid-template-columns: minmax(0, 1fr);
 			gap: 1rem;
+			height: auto;
 			min-height: 0;
+			max-height: none;
 			padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 9rem);
+			overflow: visible;
 		}
 
 		.markdown-preview {
 			padding-left: 0;
 			padding-top: 0.5rem;
+			height: auto;
+			overflow: visible;
 		}
 
 		.dashboard-empty-state,
