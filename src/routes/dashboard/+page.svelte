@@ -2565,6 +2565,11 @@
 	async function renameActiveDoc() {
 		const currentDoc = docs[activeDocIndex];
 		if (!currentDoc) return;
+		if (isDocLocked(currentDoc) && !isDocOwner(currentDoc)) {
+			closeDocMenu();
+			toast.warning('这个页面已被创建者锁定，只有创建者可以重命名。');
+			return;
+		}
 		renameInput = currentDoc.title;
 		closeDocMenu();
 		showRenameModal = true;
@@ -2576,6 +2581,11 @@
 		const nextTitle = renameInput.trim();
 		if (!currentDoc || !nextTitle || nextTitle === currentDoc.title) {
 			showRenameModal = false;
+			return;
+		}
+		if (isDocLocked(currentDoc) && !isDocOwner(currentDoc)) {
+			showRenameModal = false;
+			toast.warning('这个页面已被创建者锁定，只有创建者可以重命名。');
 			return;
 		}
 		currentDoc.title = nextTitle;
@@ -3109,6 +3119,11 @@
 	async function deleteActiveDoc() {
 		const currentDoc = docs[activeDocIndex];
 		if (!currentDoc) return;
+		if (isDocLocked(currentDoc) && !isDocOwner(currentDoc)) {
+			closeDocMenu();
+			toast.warning('这个页面已被创建者锁定，只有创建者可以删除。');
+			return;
+		}
 		closeDocMenu();
 		showDeleteDocModal = true;
 		requestAnimationFrame(() => animateModalEnter());
@@ -3117,6 +3132,11 @@
 	async function confirmDeleteActiveDoc() {
 		const currentDoc = docs[activeDocIndex];
 		if (!currentDoc) return;
+		if (isDocLocked(currentDoc) && !isDocOwner(currentDoc)) {
+			showDeleteDocModal = false;
+			toast.warning('这个页面已被创建者锁定，只有创建者可以删除。');
+			return;
+		}
 
 		const { error } = await supabase.from('amnesia_docs').delete().eq('id', currentDoc.id);
 		if (error) {
@@ -5317,6 +5337,7 @@ async function copyPageContent() {
 
 {#if activeDocMenuId !== null}
 	<div class="doc-menu-backdrop" onclick={closeDocMenu}></div>
+	{@const menuDoc = docs.find((doc) => doc.id === activeDocMenuId) ?? null}
 	<div
 		bind:this={docMenuNode}
 		class="doc-menu doc-menu-floating"
@@ -5325,7 +5346,13 @@ async function copyPageContent() {
 		<div class="doc-menu-headerline">
 			<span class="doc-menu-kicker">必须操作你了</span>
 		</div>
-		<button class="doc-menu-item" type="button" onclick={renameActiveDoc}>
+		<button
+			class="doc-menu-item"
+			type="button"
+			disabled={!!menuDoc && isDocLocked(menuDoc) && !isDocOwner(menuDoc)}
+			onclick={renameActiveDoc}
+			title={menuDoc && isDocLocked(menuDoc) && !isDocOwner(menuDoc) ? '已锁定，只有创建者可以重命名' : '重命名'}
+		>
 			<span class="doc-menu-icon">✎</span>
 			<span class="doc-menu-copy">
 				<span class="doc-menu-title">重命名</span>
@@ -5355,7 +5382,13 @@ async function copyPageContent() {
 			</span>
 		</button>
 		<div class="doc-menu-divider"></div>
-		<button type="button" class="doc-menu-item is-danger" onclick={deleteActiveDoc}>
+		<button
+			type="button"
+			class="doc-menu-item is-danger"
+			disabled={!!menuDoc && isDocLocked(menuDoc) && !isDocOwner(menuDoc)}
+			onclick={deleteActiveDoc}
+			title={menuDoc && isDocLocked(menuDoc) && !isDocOwner(menuDoc) ? '已锁定，只有创建者可以删除' : '删除'}
+		>
 			<span class="doc-menu-icon" aria-hidden="true">
 				<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
 					<path d="M0 0h24v24H0z" fill="none" />
