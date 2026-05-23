@@ -33,6 +33,7 @@
 	let triggerNode = $state<HTMLButtonElement | null>(null);
 	let panelNode = $state<HTMLDivElement | null>(null);
 	let panelStyle = $state('');
+	let mobileSheet = $state(false);
 
 	let selectedOption = $derived(
 		options.find((option) => String(option.value) === String(value)) ?? null
@@ -40,6 +41,12 @@
 
 	function syncPanelPosition() {
 		if (!triggerNode) return;
+		if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+			mobileSheet = true;
+			panelStyle = `left:12px; right:12px; bottom:calc(env(safe-area-inset-bottom, 0px) + 12px); width:auto;`;
+			return;
+		}
+		mobileSheet = false;
 		if (positioning === 'absolute') {
 			panelStyle = `left:0; top:calc(100% + 8px); width:100%;`;
 			return;
@@ -187,6 +194,7 @@
 		<div
 			bind:this={panelNode}
 			class:absolute-panel={positioning === 'absolute'}
+			class:mobile-sheet={mobileSheet}
 			class={`themed-select-panel ${panelClassName}`}
 			style={panelStyle}
 			role="listbox"
@@ -313,6 +321,15 @@
 		max-height: 18rem;
 	}
 
+	.themed-select-panel.mobile-sheet {
+		position: fixed;
+		inset: auto 12px calc(env(safe-area-inset-bottom, 0px) + 12px) 12px;
+		width: auto !important;
+		max-height: min(58vh, 28rem);
+		border-radius: calc(var(--dashboard-radius) * 0.9);
+		padding: 0.55rem;
+	}
+
 	.themed-select-option {
 		display: flex;
 		width: 100%;
@@ -376,5 +393,40 @@
 		font-size: 0.76rem;
 		font-weight: 900;
 		color: color-mix(in oklab, var(--dashboard-accent) 72%, var(--dashboard-fg));
+	}
+
+	@media (max-width: 900px) {
+		.themed-select-trigger {
+			min-height: 2.85rem;
+			padding: 0.8rem 0.95rem;
+			font-size: 0.9rem;
+		}
+
+		.themed-select-panel.mobile-sheet {
+			inset: auto 0 0 0;
+			max-height: min(70dvh, 34rem);
+			border-right: none;
+			border-bottom: none;
+			border-left: none;
+			border-radius: 1.35rem 1.35rem 0 0;
+			padding:
+				0.7rem
+				0.7rem
+				calc(env(safe-area-inset-bottom, 0px) + 0.7rem)
+				0.7rem;
+		}
+
+		.themed-select-option {
+			min-height: 3rem;
+			padding: 0.8rem 0.9rem;
+		}
+
+		.themed-select-option-label {
+			font-size: 0.88rem;
+		}
+
+		.themed-select-option-hint {
+			font-size: 0.72rem;
+		}
 	}
 </style>

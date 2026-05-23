@@ -87,6 +87,9 @@
 	let showEmojiPickerModal = $state(false);
 	let showUserProfileModal = $state(false);
 	let showQuickSearchModal = $state(false);
+	let isMobileViewport = $state(false);
+	let mobileSidebarOpen = $state(false);
+	let mobileToolbarExpanded = $state(false);
 	let lockPage = $state(false);
 	let theme = $state('cupcake');
 	let pagePaddingX = $state(48);
@@ -263,6 +266,15 @@
 	function restoreEditorSelection() {
 		if (!editor || !savedEditorSelection) return;
 		editor.chain().focus().setTextSelection(savedEditorSelection).run();
+	}
+
+	function syncViewportState() {
+		if (typeof window === 'undefined') return;
+		isMobileViewport = window.innerWidth <= 900;
+		if (!isMobileViewport) {
+			mobileSidebarOpen = false;
+			mobileToolbarExpanded = false;
+		}
 	}
 
 	function openUserProfileModal() {
@@ -1896,6 +1908,7 @@
 
 	function openCreateDocModal(category?: string) {
 		closeSpaceContextMenu();
+		mobileSidebarOpen = false;
 		newDocTitleInput = '';
 		newDocCategoryInput = category || categoryOptions[0] || '个人笔记';
 		newDocFolderInput = spaceContextMenuFolder || '';
@@ -1905,6 +1918,7 @@
 
 	function openCreateFolderModal() {
 		closeSpaceContextMenu();
+		mobileSidebarOpen = false;
 		newFolderInput = '';
 		pendingFolderSpace = (newDocCategoryInput as SpaceCategory) || '个人笔记';
 		showCreateFolderModal = true;
@@ -1912,31 +1926,38 @@
 	}
 
 	function openEmojiPickerModal() {
+		mobileToolbarExpanded = false;
 		showEmojiPickerModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function openGlobalSettingsModal() {
+		mobileToolbarExpanded = false;
+		mobileSidebarOpen = false;
 		showGlobalSettingsModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function openPageSettingsModal() {
+		mobileToolbarExpanded = false;
 		showPageSettingsModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function openTeamWorkspaceModal() {
+		mobileSidebarOpen = false;
 		showTeamWorkspaceModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function openPropertiesModal() {
-								openPropertiesModal();
+		mobileToolbarExpanded = false;
+		showPropertiesModal = true;
 		requestAnimationFrame(() => animateModalEnter());
 	}
 
 	function openUserManagementModal() {
+		mobileSidebarOpen = false;
 		showUserManagement = true;
 		requestAnimationFrame(() => animateModalEnter());
 		refreshUsers();
@@ -2678,6 +2699,7 @@ async function copyPageContent() {
 	function handleDocClick(index: number, docTitle: string) {
 		if (activeDocIndex === index) return;
 		closeSpaceContextMenu();
+		mobileSidebarOpen = false;
 		activeDocIndex = index;
 		closeQuickSearchModal();
 		toast.info(`正在打开: ${docTitle}`);
@@ -2716,6 +2738,8 @@ async function copyPageContent() {
 		userState.loadFromLocalStorage();
 		loadDashboardSettings();
 		applyTheme();
+		syncViewportState();
+		window.addEventListener('resize', syncViewportState);
 		window.addEventListener('keydown', handleDashboardKeydown);
 		if (!userState.session) {
 			goto('/login');
@@ -2829,6 +2853,7 @@ async function copyPageContent() {
 	onDestroy(() => {
 		if (typeof window !== 'undefined') {
 			window.removeEventListener('keydown', handleDashboardKeydown);
+			window.removeEventListener('resize', syncViewportState);
 		}
 		dashboardMotionCleanup?.();
 		dashboardMotionCleanup = null;
@@ -2849,11 +2874,20 @@ async function copyPageContent() {
 
 <div bind:this={dashboardShellNode} class="dashboard-shell flex h-[100dvh] max-h-[100dvh] w-full overflow-hidden text-sm">
 
+	{#if isMobileViewport && mobileSidebarOpen}
+		<button
+			type="button"
+			class="dashboard-mobile-sidebar-backdrop"
+			aria-label="关闭侧边栏"
+			onclick={() => (mobileSidebarOpen = false)}
+		></button>
+	{/if}
+
 	<!-- =================== 左侧 Notion 侧边栏 =================== -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		bind:this={sidebarNode}
-		class="dashboard-sidebar w-60 h-full min-h-0 flex flex-col justify-between shrink-0 select-none z-10 overflow-visible"
+		class="dashboard-sidebar w-60 h-full min-h-0 flex flex-col justify-between shrink-0 select-none z-10 overflow-visible {isMobileViewport ? 'dashboard-sidebar-mobile' : ''} {isMobileViewport && mobileSidebarOpen ? 'is-open' : ''}"
 	>
 		<div class="flex-1 min-h-0 flex flex-col overflow-y-auto overflow-x-visible p-2.5 space-y-3">
 
@@ -3067,22 +3101,22 @@ async function copyPageContent() {
 							<div class="dashboard-team-switcher px-2 py-2 rounded-xl dashboard-sidebar-card">
 								<div class="dashboard-section-label">当前团队</div>
 								<div class="flex items-center gap-1">
-								<div class="mt-2 w-full">
-									<ThemedSelect
-										bind:value={currentTeamIdValue}
-										options={teamSelectOptions}
-										placeholder="选择当前团队"
-										positioning="absolute"
-										onChange={(value) => handleCurrentTeamChange(value)}
-									/>
+									<div class="mt-2 w-full">
+										<ThemedSelect
+											bind:value={currentTeamIdValue}
+											options={teamSelectOptions}
+											placeholder="选择当前团队"
+											positioning="absolute"
+											onChange={(value) => handleCurrentTeamChange(value)}
+										/>
+									</div>
+									<button type="button" aria-label="查看团队信息" class="dashboard-btn dashboard-btn-subtle w-12 justify-center mt-2" onclick={openTeamWorkspaceModal}>
+										<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
+											<path d="M0 0h24v24H0z" fill="none" />
+											<path fill="currentColor" d="M2 22a8 8 0 1 1 16 0zm8-9c-3.315 0-6-2.685-6-6s2.685-6 6-6s6 2.685 6 6s-2.685 6-6 6m7.363 2.233A7.505 7.505 0 0 1 22.983 22H20c0-2.61-1-4.986-2.637-6.767m-2.023-2.276A7.98 7.98 0 0 0 18 7a7.96 7.96 0 0 0-1.015-3.903A5 5 0 0 1 21 8a5 5 0 0 1-5.66 4.957" />
+										</svg>
+									</button>
 								</div>
-    								<button type="button" aria-label="查看团队信息" class="dashboard-btn dashboard-btn-subtle w-12 justify-center mt-2" onclick={openTeamWorkspaceModal}>
-    								    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24">
-    												<path d="M0 0h24v24H0z" fill="none" />
-    												<path fill="currentColor" d="M2 22a8 8 0 1 1 16 0zm8-9c-3.315 0-6-2.685-6-6s2.685-6 6-6s6 2.685 6 6s-2.685 6-6 6m7.363 2.233A7.505 7.505 0 0 1 22.983 22H20c0-2.61-1-4.986-2.637-6.767m-2.023-2.276A7.98 7.98 0 0 0 18 7a7.96 7.96 0 0 0-1.015-3.903A5 5 0 0 1 21 8a5 5 0 0 1-5.66 4.957" />
-    									</svg>
-    								</button>
-    							</div>
 							</div>
 						{:else}
 							<div class="px-2 py-1 text-[11px] dashboard-muted">暂无团队，请先创建或加入团队</div>
@@ -3329,16 +3363,43 @@ async function copyPageContent() {
 		<!-- 顶部面包屑与在线协作组 -->
 		<div class="dashboard-topbar w-full h-11 px-6 flex items-center justify-between shrink-0 sticky top-0 z-20">
 			<div class="flex items-center gap-3 text-xs dashboard-muted font-medium min-w-0">
-				<span>工作台</span>
-				<span>/</span>
-				<span>{activeDoc?.category || ''}</span>
-				<span>/</span>
-				<span class="dashboard-strong font-semibold flex items-center gap-1 truncate">
-					<span>{activeDoc?.emoji || ''}</span>
-					<span>{activeDoc?.title || ''}</span>
-				</span>
+				{#if isMobileViewport}
+					<button
+						type="button"
+						class="dashboard-mobile-topbar-btn"
+						aria-label="打开导航"
+						onclick={() => (mobileSidebarOpen = true)}
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16"/></svg>
+					</button>
+				{/if}
+				{#if isMobileViewport}
+					<span class="dashboard-strong font-semibold flex items-center gap-1 truncate min-w-0">
+						<span class="shrink-0">{activeDoc?.emoji || ''}</span>
+						<span class="truncate">{activeDoc?.title || '未命名文章'}</span>
+					</span>
+				{:else}
+					<span>工作台</span>
+					<span>/</span>
+					<span>{activeDoc?.category || ''}</span>
+					<span>/</span>
+					<span class="dashboard-strong font-semibold flex items-center gap-1 truncate">
+						<span>{activeDoc?.emoji || ''}</span>
+						<span>{activeDoc?.title || ''}</span>
+					</span>
+				{/if}
 			</div>
 			<div class="flex items-center gap-1.5 text-xs dashboard-muted font-medium font-sans shrink-0">
+				{#if isMobileViewport}
+					<button
+						type="button"
+						class="dashboard-mobile-topbar-btn"
+						aria-label="页面设置"
+						onclick={openPageSettingsModal}
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1l1-4z"/></svg>
+					</button>
+				{/if}
 				<div
 					class="dashboard-sync-status"
 					onmouseenter={() => (showSyncStatusPopover = true)}
@@ -3508,7 +3569,255 @@ async function copyPageContent() {
 					{/if}
 
 					{#if editor}
-						<div class="editor-toolbar-sticky">
+						<div class="editor-toolbar-sticky {isMobileViewport ? 'is-mobile' : ''}">
+							{#if isMobileViewport}
+								<div class="dashboard-mobile-toolbar-sheet {mobileToolbarExpanded ? 'is-expanded' : ''}">
+									<div class="dashboard-mobile-toolbar-sheet-handle-wrap">
+										<button
+											type="button"
+											class="dashboard-mobile-toolbar-sheet-handle"
+											aria-label={mobileToolbarExpanded ? '收起工具栏' : '展开工具栏'}
+											aria-expanded={mobileToolbarExpanded}
+											onclick={() => (mobileToolbarExpanded = !mobileToolbarExpanded)}
+										>
+											<span class="dashboard-mobile-toolbar-sheet-grabber"></span>
+											<svg class={`dashboard-mobile-toolbar-arrow ${mobileToolbarExpanded ? 'is-open' : ''}`} xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+												<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 9l6 6l6-6"/>
+											</svg>
+										</button>
+									</div>
+									<div class="dashboard-mobile-toolbar-bar">
+										<button
+											type="button"
+											onclick={() => editor?.chain().focus().toggleBold().run()}
+											class="dashboard-toolbar-btn font-bold {editor.isActive('bold') ? 'is-active' : ''}"
+											title="加粗"
+										>
+											B
+										</button>
+										<button
+											type="button"
+											onclick={() => editor?.chain().focus().toggleItalic().run()}
+											class="dashboard-toolbar-btn italic {editor.isActive('italic') ? 'is-active' : ''}"
+											title="斜体"
+										>
+											I
+										</button>
+										<button
+											type="button"
+											onclick={() => editor?.chain().focus().toggleStrike().run()}
+											class="dashboard-toolbar-btn line-through {editor.isActive('strike') ? 'is-active' : ''}"
+											title="删除线"
+										>
+											S
+										</button>
+										<button
+											type="button"
+											onclick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
+											class="dashboard-toolbar-btn {isEditorActive('heading', { level: 1 }) ? 'is-active font-bold' : ''}"
+											title="一级标题"
+										>
+											H1
+										</button>
+										<button
+											type="button"
+											onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+											class="dashboard-toolbar-btn {isEditorActive('heading', { level: 2 }) ? 'is-active font-bold' : ''}"
+											title="二级标题"
+										>
+											H2
+										</button>
+									</div>
+									<div class="editor-toolbar-overlay is-mobile {mobileToolbarExpanded ? 'is-expanded' : ''}">
+							<button
+								type="button"
+								onclick={() => toggleEditMode('rich')}
+								class="dashboard-mode-toggle {editMode === 'rich' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+							>
+								可视化
+							</button>
+							<button
+								type="button"
+								onclick={() => toggleEditMode('markdown')}
+								class="dashboard-mode-toggle dashboard-mode-toggle-mono {editMode === 'markdown' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+							>
+								Markdown
+							</button>
+							<button
+								type="button"
+								onclick={() => toggleEditMode('html')}
+								class="dashboard-mode-toggle dashboard-mode-toggle-mono {editMode === 'html' ? 'dashboard-btn-primary' : 'dashboard-btn-subtle'}"
+							>
+								HTML
+							</button>
+
+							<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleBold().run()}
+								class="dashboard-toolbar-btn font-bold {editor.isActive('bold') ? 'is-active' : ''}"
+								title="加粗"
+							>
+								B
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleItalic().run()}
+								class="dashboard-toolbar-btn italic {editor.isActive('italic') ? 'is-active' : ''}"
+								title="斜体"
+							>
+								I
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleStrike().run()}
+								class="dashboard-toolbar-btn line-through {editor.isActive('strike') ? 'is-active' : ''}"
+								title="删除线"
+							>
+								S
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleCode().run()}
+								class="dashboard-toolbar-btn font-mono {editor.isActive('code') ? 'is-active' : ''}"
+								title="行内代码"
+							>
+								&lt;/&gt;
+							</button>
+							<div class="tooltip" data-tip="插入链接">
+								<button type="button" onclick={insertLink} class="dashboard-toolbar-btn" title="插入链接" aria-label="插入链接">
+									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10a5 5 0 0 1 7.54.54l.92.93a5 5 0 0 1 0 7.07l-3 3a5 5 0 0 1-7.07 0l-1-1m1.61-8.69a5 5 0 0 1-7.07 0l-1-1a5 5 0 0 1 0-7.07l3-3a5 5 0 0 1 7.07 0l.92.93A5 5 0 0 1 11 14"/></svg>
+								</button>
+							</div>
+							<div class="tooltip" data-tip="插入图片">
+								<button type="button" onclick={insertImage} class="dashboard-toolbar-btn" title="插入图片" aria-label="插入图片">
+									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2m3 6h.01M21 15l-5-5L5 21"/></svg>
+								</button>
+							</div>
+							<button type="button" onclick={insertSafeHtml} class="dashboard-toolbar-btn">HTML</button>
+
+							<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
+								class="dashboard-toolbar-btn {isEditorActive('heading', { level: 1 }) ? 'is-active font-bold' : ''}"
+								title="一级标题"
+							>
+								H1
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
+								class="dashboard-toolbar-btn {isEditorActive('heading', { level: 2 }) ? 'is-active font-bold' : ''}"
+								title="二级标题"
+							>
+								H2
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}
+								class="dashboard-toolbar-btn {isEditorActive('heading', { level: 3 }) ? 'is-active font-bold' : ''}"
+								title="三级标题"
+							>
+								H3
+							</button>
+
+							<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleBulletList().run()}
+								class="dashboard-toolbar-btn {editor.isActive('bulletList') ? 'is-active' : ''}"
+								title="无序列表"
+							>
+								• 无序
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleOrderedList().run()}
+								class="dashboard-toolbar-btn {editor.isActive('orderedList') ? 'is-active' : ''}"
+								title="有序列表"
+							>
+								1. 有序
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleBlockquote().run()}
+								class="dashboard-toolbar-btn {editor.isActive('blockquote') ? 'is-active' : ''}"
+								title="引用块"
+							>
+								“ 引用
+							</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().toggleCodeBlock().run()}
+								class="dashboard-toolbar-btn {editor.isActive('codeBlock') ? 'is-active font-mono' : ''}"
+								title="代码块"
+							>
+								代码块
+							</button>
+
+							<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+							<div class="relative">
+							    <div class="tooltip" data-tip="文本颜色">
+								<button
+									type="button"
+									class="dashboard-toolbar-btn font-black {activeTextColorState ? 'is-active' : ''}"
+									style={`color:${activeTextColorState || selectedTextColor || 'var(--dashboard-fg)'};`}
+									onclick={toggleTextColorPicker}
+									oncontextmenu={(e) => {
+										e.preventDefault();
+										rememberEditorSelection();
+										syncActiveFormattingState();
+										showTextColorModal = true;
+										showHighlightColorModal = false;
+									}}
+									title="文本颜色"
+								>A</button>
+								</div>
+							</div>
+
+							<div class="relative">
+								<div class="tooltip" data-tip="文字背景色">
+									<button
+										type="button"
+										class="dashboard-toolbar-btn font-black {activeHighlightColorState ? 'is-active' : ''}"
+										style={`background:${activeHighlightColorState || selectedHighlightColor || 'transparent'}; color:${activeHighlightColorState ? '#111' : 'var(--dashboard-fg)'};`}
+										onclick={toggleHighlightColorPicker}
+										oncontextmenu={(e) => {
+											e.preventDefault();
+											rememberEditorSelection();
+											syncActiveFormattingState();
+											showHighlightColorModal = true;
+											showTextColorModal = false;
+										}}
+										title="文字背景色"
+									>A</button>
+								</div>
+							</div>
+
+							<div class="toolbar-divider mx-1 h-4 w-px"></div>
+
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().undo().run()}
+								disabled={!editor.can().chain().focus().undo().run()}
+								class="dashboard-toolbar-btn"
+								title="撤销"
+							>↺</button>
+							<button
+								type="button"
+								onclick={() => editor?.chain().focus().redo().run()}
+								disabled={!editor.can().chain().focus().redo().run()}
+								class="dashboard-toolbar-btn"
+								title="重做"
+							>↻</button>
+									</div>
+								</div>
+							{:else}
 							<div class="editor-toolbar-overlay">
 							<button
 								type="button"
@@ -3704,6 +4013,7 @@ async function copyPageContent() {
 								</button>
 							</div>
 							</div>
+							{/if}
 						</div>
 					{/if}
 				</div>
@@ -3713,7 +4023,7 @@ async function copyPageContent() {
 
 	</div>
 
-	<button type="button" class="page-settings-fab" onclick={openPageSettingsModal} title="页面设置">
+	<button type="button" class="page-settings-fab" onclick={openPageSettingsModal} title="页面设置" hidden={isMobileViewport}>
 		<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 20h9M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1l1-4z"/></svg>
 	</button>
 
@@ -3770,9 +4080,9 @@ async function copyPageContent() {
 				<span class="doc-menu-title">删除</span>
 				<span class="doc-menu-desc">移除此文章</span>
 			</span>
-		</button>
-	</div>
-{/if}
+							</button>
+						</div>
+					{/if}
 
 {#if spaceContextMenuOpen}
 	<div class="doc-menu-backdrop" onclick={closeSpaceContextMenu}></div>
@@ -4628,10 +4938,31 @@ async function copyPageContent() {
 		background: var(--dashboard-bg);
 	}
 
+	.dashboard-mobile-sidebar-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 44;
+		border: none;
+		background: color-mix(in oklab, black 40%, transparent);
+		backdrop-filter: blur(10px);
+	}
+
 	.dashboard-topbar {
 		border-bottom: 1px solid color-mix(in oklab, var(--dashboard-fg) 8%, transparent);
 		background: color-mix(in oklab, var(--dashboard-panel) 86%, transparent);
 		backdrop-filter: blur(18px);
+	}
+
+	.dashboard-mobile-topbar-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2rem;
+		height: 2rem;
+		border: 1px solid var(--dashboard-border);
+		border-radius: calc(var(--dashboard-radius) * 0.45);
+		background: color-mix(in oklab, var(--dashboard-panel) 90%, transparent);
+		color: var(--dashboard-fg);
 	}
 
 	.dashboard-muted {
@@ -5599,6 +5930,88 @@ async function copyPageContent() {
 		pointer-events: none;
 	}
 
+	.editor-toolbar-sticky.is-mobile {
+		position: fixed;
+		right: 0;
+		bottom: 0;
+		left: 0;
+		z-index: 36;
+		margin-top: 0;
+		padding: 0;
+	}
+
+	.dashboard-mobile-toolbar-sheet {
+		pointer-events: auto;
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		left: 0;
+		display: none;
+		flex-direction: column;
+		border-top: 1px solid var(--dashboard-border);
+		border-radius: 1.25rem 1.25rem 0 0;
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in oklab, var(--dashboard-panel) 96%, white 4%),
+				color-mix(in oklab, var(--dashboard-panel) 93%, var(--dashboard-bg))
+			);
+		box-shadow: 0 -18px 48px var(--dashboard-shadow-color);
+		backdrop-filter: blur(22px) saturate(1.06);
+	}
+
+	.dashboard-mobile-toolbar-sheet.is-expanded {
+		max-height: min(68dvh, 34rem);
+	}
+
+	.dashboard-mobile-toolbar-sheet-handle-wrap {
+		display: flex;
+		justify-content: center;
+		padding: 0.45rem 0.8rem 0.15rem;
+	}
+
+	.dashboard-mobile-toolbar-sheet-handle {
+		pointer-events: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		border: none;
+		background: transparent;
+		padding: 0.1rem 0.35rem;
+		color: var(--dashboard-fg);
+		cursor: pointer;
+	}
+
+	.dashboard-mobile-toolbar-sheet-grabber {
+		display: inline-flex;
+		width: 2.6rem;
+		height: 0.34rem;
+		border-radius: 999px;
+		background: color-mix(in oklab, var(--dashboard-fg) 18%, transparent);
+	}
+
+	.dashboard-mobile-toolbar-bar {
+		display: flex;
+		min-width: 0;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.45rem 0.8rem 0.65rem;
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+
+	.dashboard-mobile-toolbar-bar::-webkit-scrollbar {
+		display: none;
+	}
+
+	.dashboard-mobile-toolbar-arrow {
+		transition: transform 160ms ease;
+	}
+
+	.dashboard-mobile-toolbar-arrow.is-open {
+		transform: rotate(180deg);
+	}
+
 	.editor-toolbar-overlay {
 		position: relative;
 		left: 50%;
@@ -5615,6 +6028,30 @@ async function copyPageContent() {
 		padding: 0.7rem 0.85rem;
 		box-shadow: 0 16px 40px var(--dashboard-shadow-color);
 		backdrop-filter: blur(14px);
+	}
+
+	.editor-toolbar-overlay.is-mobile {
+		left: auto;
+		display: none;
+		max-width: 100%;
+		max-height: min(48dvh, 24rem);
+		margin-top: 0;
+		padding:
+			0.15rem
+			0.8rem
+			calc(env(safe-area-inset-bottom, 0px) + 0.8rem)
+			0.8rem;
+		transform: none;
+		border: none;
+		border-top: 1px solid color-mix(in oklab, var(--dashboard-fg) 8%, transparent);
+		border-radius: 0;
+		background: transparent;
+		box-shadow: none;
+		overflow-y: auto;
+	}
+
+	.editor-toolbar-overlay.is-mobile.is-expanded {
+		display: flex;
 	}
 
 	.dashboard-toolbar-btn {
@@ -5773,7 +6210,7 @@ async function copyPageContent() {
 	.doc-menu-backdrop {
 		position: fixed;
 		inset: 0;
-		z-index: 38;
+		z-index: 58;
 		background: transparent;
 	}
 
@@ -5781,7 +6218,7 @@ async function copyPageContent() {
 		position: absolute;
 		right: 0;
 		top: calc(100% + 0.2rem);
-		z-index: 40;
+		z-index: 60;
 		display: flex;
 		width: 12rem;
 		max-width: 12rem;
@@ -6300,6 +6737,149 @@ async function copyPageContent() {
 		border-radius: 0.35rem;
 		background: var(--dashboard-inline-code-bg);
 		padding: 0.15rem 0.32rem;
+	}
+
+	@media (max-width: 900px) {
+		.dashboard-shell {
+			position: relative;
+		}
+
+		.dashboard-sidebar-mobile {
+			position: fixed;
+			inset: 0 auto 0 0;
+			width: min(22rem, calc(100vw - 2.25rem));
+			max-width: calc(100vw - 2.25rem);
+			height: 100dvh;
+			transform: translateX(-108%);
+			transition: transform 220ms ease;
+			z-index: 45;
+			box-shadow: 0 24px 72px var(--dashboard-shadow-color);
+		}
+
+		.dashboard-sidebar-mobile.is-open {
+			transform: translateX(0);
+		}
+
+		.dashboard-main {
+			min-width: 0;
+		}
+
+		.dashboard-topbar {
+			height: auto;
+			padding: 0.8rem 0.9rem;
+			gap: 0.8rem;
+		}
+
+		.dashboard-cover {
+			height: 8rem;
+		}
+
+		.dashboard-main > :global(div.mx-auto.w-full.max-w-4xl) {
+			transform: none;
+			padding-top: 1rem;
+			padding-bottom: 7.5rem;
+		}
+
+		.dashboard-page-title {
+			font-size: clamp(2rem, 8vw, 2.8rem) !important;
+		}
+
+		.dashboard-emoji-trigger {
+			height: 4.2rem;
+			width: 4.2rem;
+			font-size: 2.9rem;
+		}
+
+		.editor-shell {
+			padding: 0;
+		}
+
+		.dashboard-mobile-toolbar-sheet {
+			display: flex;
+		}
+
+		.dashboard-mobile-toolbar-bar .dashboard-toolbar-btn {
+			min-width: 2.2rem;
+			min-height: 2rem;
+			padding: 0.35rem 0.5rem;
+			flex-shrink: 0;
+		}
+
+		.dashboard-mobile-toolbar-sheet .editor-toolbar-overlay.is-mobile {
+			display: none;
+		}
+
+		.dashboard-mobile-toolbar-sheet.is-expanded .editor-toolbar-overlay.is-mobile {
+			display: flex;
+		}
+
+		.markdown-split-view {
+			grid-template-columns: minmax(0, 1fr);
+			gap: 1rem;
+			min-height: 0;
+			padding-bottom: 8rem;
+		}
+
+		.markdown-preview {
+			padding-left: 0;
+			padding-top: 0.5rem;
+		}
+
+		.dashboard-empty-state,
+		.dashboard-main > :global(div.mx-auto.flex.h-full.max-w-3xl) {
+			padding: 2rem 1.2rem 7rem;
+		}
+
+		.dashboard-modal-backdrop {
+			align-items: flex-end;
+			padding: 0;
+		}
+
+		.dashboard-modal-box {
+			width: 100%;
+			max-height: min(88dvh, 88dvh);
+			border-right: none;
+			border-bottom: none;
+			border-left: none;
+			border-radius: 1.35rem 1.35rem 0 0;
+			padding:
+				1rem
+				1rem
+				calc(env(safe-area-inset-bottom, 0px) + 1rem)
+				1rem;
+		}
+
+		.dashboard-modal-actions {
+			flex-wrap: wrap;
+			justify-content: stretch;
+		}
+
+		.dashboard-modal-actions :global(.dashboard-btn) {
+			flex: 1 1 10rem;
+		}
+
+		.doc-menu-backdrop {
+			background: color-mix(in oklab, black 32%, transparent);
+			backdrop-filter: blur(10px);
+		}
+
+		.doc-menu,
+		.doc-menu.doc-menu-floating,
+		.space-context-menu {
+			position: fixed;
+			top: auto !important;
+			right: 0.75rem;
+			bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+			left: 0.75rem !important;
+			width: auto !important;
+			max-width: none;
+			border-radius: 1.2rem;
+			padding: 0.55rem;
+		}
+
+		.page-settings-fab {
+			display: none;
+		}
 	}
 
 	@keyframes pulse {
