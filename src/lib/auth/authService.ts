@@ -75,18 +75,28 @@ export async function registerWithInvite(payload: RegisterPayload) {
 	}
 
 	const passwordHash = await hashPassword(payload.password);
-	const { error } = await supabase.from('amnesia_users').insert({
-		username: payload.username,
-		password_hash: passwordHash,
-		avatar_seed: payload.username,
-		system_role: payload.systemRole ?? '用户'
-	});
+	const { data, error } = await supabase
+		.from('amnesia_users')
+		.insert({
+			username: payload.username,
+			password_hash: passwordHash,
+			avatar_seed: payload.username,
+			system_role: payload.systemRole ?? '用户'
+		})
+		.select(
+			'id, username, password_hash, password, system_role, encryption_key_hint, encryption_notice_accepted, created_at, avatar_seed, avatar_url'
+		)
+		.single();
 
 	if (error) {
 		return { success: false, message: `注册失败: ${error.message}` };
 	}
 
-	return { success: true, message: '注册成功，请登录' };
+	return {
+		success: true,
+		message: '注册成功，正在进入工作台',
+		user: mapUser(data as RawUserRow)
+	};
 }
 
 export async function registerUserByAdmin(input: {

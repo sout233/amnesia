@@ -4,6 +4,8 @@
 	import { goto } from '$app/navigation';
 	import { toast } from '$lib/toastQueue.svelte';
 	import { registerWithInvite } from '$lib/auth/authService';
+	import { userState } from '$lib/userData.svelte';
+	import { deriveDocEncryptionKey } from '$lib/crypto/appCrypto';
 
 	let panel = $state<HTMLElement | null>(null);
 	let username = $state('');
@@ -25,10 +27,28 @@
 			return;
 		}
 		toast.success(result.message);
-		goto('/login');
+		if (result.user) {
+			userState.setSession({
+				user: {
+					id: result.user.id,
+					username: result.user.username,
+					role: result.user.systemRole,
+					encryptionReady: result.user.encryptionReady,
+					encryptionNoticeAccepted: result.user.encryptionNoticeAccepted,
+					docEncryptionKey: await deriveDocEncryptionKey(password),
+					avatarSeed: result.user.avatarSeed ?? result.user.username,
+					avatarUrl: result.user.avatarUrl ?? null
+				}
+			});
+		}
+		goto('/dashboard', { replaceState: true });
 	}
 
 	onMount(() => {
+		if (userState.session) {
+			goto('/dashboard', { replaceState: true });
+			return;
+		}
 		if (panel) {
 			animate(panel, {
 				translateY: [60, 0],

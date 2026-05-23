@@ -15,6 +15,12 @@
 	let svgPath2 = $state<SVGPolygonElement | null>(null);
 
 	let isBrowserSupported = $state(true);
+	let isMobileViewport = $state(false);
+
+	function syncViewportState() {
+		if (typeof window === 'undefined') return;
+		isMobileViewport = window.innerWidth < 768;
+	}
 
 	const initAnime = () => {
 		if (containerNode) {
@@ -74,6 +80,8 @@
 
 	onMount(() => {
 		isBrowserSupported = isBrowserSupportSuperAnimation();
+		syncViewportState();
+		window.addEventListener('resize', syncViewportState);
 
 		initAnime();
 
@@ -91,6 +99,10 @@
 		}
 
 		animateRandomPoints();
+
+		return () => {
+			window.removeEventListener('resize', syncViewportState);
+		};
 	});
 
 	const handleMouseEnter = () => {
@@ -350,7 +362,7 @@
 	</svg>
 </div>
 
-{#if isBrowserSupported}
+{#if isBrowserSupported && !isMobileViewport}
 	<div class="justifty-end jetbrains-mono fixed z-40 top-3.5 right-4 h-full md:top-3">
 		{#if userState.session}
 			<a

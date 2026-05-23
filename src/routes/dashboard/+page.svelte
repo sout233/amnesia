@@ -5841,19 +5841,19 @@ async function copyPageContent() {
 	<div class="dashboard-modal-backdrop">
 		<div class="dashboard-modal-box dashboard-modal-medium">
 			<h3 class="dashboard-modal-title">初始化文档加密</h3>
-			<div class="dashboard-helper-text my-0.5">
+			<div class="dashboard-helper-text my-1">
 				为了保护你的私有文章，Amnesia 会在文档上传前先在浏览器本地完成加密，再把密文存进数据库。
 			</div>
-			<div class="dashboard-helper-text my-0.5">
+			<div class="dashboard-helper-text my-1">
 				目前的逻辑是：先使用你的登录密码通过本地派生逻辑生成文档密钥，再用 Web Crypto API 的 <strong>AES-GCM</strong> 算法对私有文章内容加密；数据库里保存的是密文、随机 IV 和版本信息，而不是可直接阅读的正文。
 			</div>
-			<div class="dashboard-helper-text my-0.5">
+			<div class="dashboard-helper-text my-1">
 				之所以这样做，是因为我不想在数据库里直接看到其他用户的私人文章内容，所以即使我去翻数据库，也看不到你的正文实际内容。
 			</div>
-			<div class="dashboard-helper-text my-0.5">
+			<div class="dashboard-helper-text my-1">
 				这意味着你的私有文章默认会以“先本地加密、再上传”的方式保存；只有输入正确的登录密码，浏览器才能重新派生出同一把密钥并解密内容。这个初始化只允许设置一次，之后无法修改。你可以随时导出你的文章（以已解密或者加密的形式）。请确认你已经理解这个机制。
 			</div>
-			<div class="dashboard-helper-text my-0.5">
+			<div class="dashboard-helper-text my-1">
 				请输入你当前账号的登录密码来确认并生成文档加密密钥。如果以后忘记登录密码，私有文章内容也会随之无法恢复，请务必自行保管好密码。
 			</div>
 			<div class="dashboard-field">
