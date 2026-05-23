@@ -13,6 +13,7 @@
 	import type { DocSpaceType, TeamInviteRecord, TeamRecord } from '$lib/types/domain';
 	import { Editor, Node as TiptapNode, mergeAttributes } from '@tiptap/core';
 	import StarterKit from '@tiptap/starter-kit';
+	import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 	import Link from '@tiptap/extension-link';
 	import Image from '@tiptap/extension-image';
 	import { TextStyle } from '@tiptap/extension-text-style';
@@ -26,6 +27,7 @@
 	import TableHeader from '@tiptap/extension-table-header';
 	import TableCell from '@tiptap/extension-table-cell';
 	import { marked } from 'marked';
+	import { createLowlight, common as lowlightCommon } from 'lowlight';
 	import TurndownService from 'turndown';
 	import DOMPurify from 'dompurify';
 	import ThemedSelect, { type ThemedSelectOption } from '$lib/components/ThemedSelect.svelte';
@@ -180,6 +182,11 @@
 	let tableContextMenuOpen = $state(false);
 	let tableContextMenuPosition = $state({ top: 0, left: 0 });
 	let tableContextMenuNode = $state<HTMLElement | null>(null);
+	let codeBlockContextMenuOpen = $state(false);
+	let codeBlockContextMenuPosition = $state({ top: 0, left: 0 });
+	let codeBlockContextMenuNode = $state<HTMLElement | null>(null);
+	let codeBlockContextMenuBlockPos = $state<number | null>(null);
+	let activeCodeBlockLanguage = $state('');
 	let showTextColorModal = $state(false);
 	let showHighlightColorModal = $state(false);
 	let textColorControls = $state({ l: 24, c: 0.03, h: 258, a: 1 });
@@ -262,6 +269,11 @@
 		emoji: string;
 		index: number;
 	};
+	type CodeLanguageOption = {
+		value: string;
+		label: string;
+		aliases?: string[];
+	};
 	type SidebarFolderEntry = {
 		key: string;
 		name: string;
@@ -277,6 +289,34 @@
 		checked: boolean;
 		content: string;
 	};
+
+	const codeLanguageOptions: CodeLanguageOption[] = [
+		{ value: '', label: '纯文本' },
+		{ value: 'plaintext', label: 'Plain Text', aliases: ['text', 'plain'] },
+		{ value: 'bash', label: 'Bash', aliases: ['sh', 'shell', 'zsh'] },
+		{ value: 'c', label: 'C' },
+		{ value: 'cpp', label: 'C++', aliases: ['c++'] },
+		{ value: 'css', label: 'CSS' },
+		{ value: 'go', label: 'Go', aliases: ['golang'] },
+		{ value: 'html', label: 'HTML', aliases: ['xml'] },
+		{ value: 'java', label: 'Java' },
+		{ value: 'javascript', label: 'JavaScript', aliases: ['js'] },
+		{ value: 'json', label: 'JSON' },
+		{ value: 'markdown', label: 'Markdown', aliases: ['md'] },
+		{ value: 'python', label: 'Python', aliases: ['py'] },
+		{ value: 'rust', label: 'Rust', aliases: ['rs'] },
+		{ value: 'sql', label: 'SQL' },
+		{ value: 'typescript', label: 'TypeScript', aliases: ['ts'] },
+		{ value: 'yaml', label: 'YAML', aliases: ['yml'] }
+	];
+
+	const codeLanguageLookup = new Map(
+		codeLanguageOptions.flatMap((option) => {
+			const names = [option.value, ...(option.aliases ?? [])].filter(Boolean);
+			return names.map((name) => [name.toLowerCase(), option.value] as const);
+		})
+	);
+	const lowlight = createLowlight(lowlightCommon);
 
 	type ThemeConfig = {
 		name: ThemePreset;
@@ -327,6 +367,25 @@
 			}
 		) => void;
 	};
+
+	turndownServiceWithRules.addRule('amnesiaCodeBlock', {
+		filter: (node: Node) =>
+			node instanceof HTMLElement &&
+			node.tagName === 'PRE' &&
+			node.firstElementChild instanceof HTMLElement &&
+			node.firstElementChild.tagName === 'CODE',
+		replacement: (_content: string, node: Node) => {
+			if (!(node instanceof HTMLElement)) return '';
+			const codeNode = node.querySelector('code');
+			if (!(codeNode instanceof HTMLElement)) return '';
+			const className = codeNode.getAttribute('class') ?? '';
+			const matchedLanguage = className.match(/language-([^\s]+)/)?.[1] ?? '';
+			const normalizedLanguage = normalizeCodeLanguage(matchedLanguage);
+			const languageSuffix = normalizedLanguage ? normalizedLanguage : '';
+			const codeContent = codeNode.textContent?.replace(/\n$/, '') ?? '';
+			return `\n\n\`\`\`${languageSuffix}\n${codeContent}\n\`\`\`\n\n`;
+		}
+	});
 
 	turndownServiceWithRules.addRule('amnesiaRawHtmlEmbed', {
 		filter: (node: Node) => node instanceof HTMLElement && node.hasAttribute('data-html-embed-block'),
@@ -2053,8 +2112,84 @@
 			.replaceAll('>', '&gt;');
 	}
 
+	function serializeLowlightNode(node: unknown): string {
+		if (!node || typeof node !== 'object') return '';
+		const lowlightNode = node as {
+			type?: string;
+			value?: string;
+			tagName?: string;
+			properties?: Record<string, unknown>;
+			children?: unknown[];
+		};
+
+		if (lowlightNode.type === 'text') {
+			return escapeHtmlText(lowlightNode.value ?? '');
+		}
+
+		if (lowlightNode.type === 'root') {
+			return (lowlightNode.children ?? []).map((child) => serializeLowlightNode(child)).join('');
+		}
+
+		if (lowlightNode.type === 'element' && lowlightNode.tagName) {
+			const classList = Array.isArray(lowlightNode.properties?.className)
+				? (lowlightNode.properties?.className as string[]).join(' ')
+				: typeof lowlightNode.properties?.className === 'string'
+					? String(lowlightNode.properties.className)
+					: '';
+			const attrs = classList ? ` class="${escapeHtmlAttribute(classList)}"` : '';
+			const children = (lowlightNode.children ?? []).map((child) => serializeLowlightNode(child)).join('');
+			return `<${lowlightNode.tagName}${attrs}>${children}</${lowlightNode.tagName}>`;
+		}
+
+		return '';
+	}
+
 	function normalizeAmColorValue(value: string) {
 		return value.replaceAll('&quot;', '"').trim();
+	}
+
+	function normalizeCodeLanguage(value?: string | null) {
+		const raw = value?.trim().toLowerCase() ?? '';
+		if (!raw) return '';
+		return codeLanguageLookup.get(raw) ?? raw;
+	}
+
+	function getCodeLanguageLabel(value?: string | null) {
+		const normalized = normalizeCodeLanguage(value);
+		return codeLanguageOptions.find((option) => option.value === normalized)?.label ?? normalized ?? '';
+	}
+
+	function getCodeBlockContextFromTarget(target: EventTarget | null) {
+		if (!editor) return null;
+		const domTarget =
+			target instanceof HTMLElement
+				? target
+				: target instanceof Text
+					? target.parentElement
+					: null;
+		if (!domTarget) return null;
+
+		const candidate = domTarget.closest('pre, code, .hljs, [class*="hljs-"]');
+		const anchor = candidate instanceof HTMLElement ? candidate : domTarget;
+		let pos: number;
+		try {
+			pos = editor.view.posAtDOM(anchor, 0);
+		} catch {
+			return null;
+		}
+
+		const resolved = editor.state.doc.resolve(pos);
+		for (let depth = resolved.depth; depth >= 0; depth -= 1) {
+			const node = resolved.node(depth);
+			if (node.type.name !== 'codeBlock') continue;
+			const startPos = depth === 0 ? 0 : resolved.before(depth);
+			return {
+				pos: startPos,
+				language: String(node.attrs.language ?? '')
+			};
+		}
+
+		return null;
 	}
 
 	function encodeAmBlockPayload(payload: unknown) {
@@ -2157,6 +2292,25 @@
 			});
 	}
 
+	function renderHighlightedCodeBlock(code: string, language?: string | null) {
+		const normalizedLanguage = normalizeCodeLanguage(language);
+		const safeCode = escapeHtmlText(code);
+		const safeClass = normalizedLanguage ? ` class="language-${escapeHtmlAttribute(normalizedLanguage)}"` : '';
+
+		try {
+			if (normalizedLanguage && lowlight.registered(normalizedLanguage)) {
+				const tree = lowlight.highlight(normalizedLanguage, code);
+				const highlighted = serializeLowlightNode(tree);
+				return `<pre data-am-code-block="true" data-language="${escapeHtmlAttribute(normalizedLanguage)}"><code${safeClass}>${highlighted}</code></pre>`;
+			}
+			const autoTree = lowlight.highlightAuto(code);
+			const highlighted = serializeLowlightNode(autoTree);
+			return `<pre data-am-code-block="true"${normalizedLanguage ? ` data-language="${escapeHtmlAttribute(normalizedLanguage)}"` : ''}><code${safeClass}>${highlighted}</code></pre>`;
+		} catch {
+			return `<pre data-am-code-block="true"${normalizedLanguage ? ` data-language="${escapeHtmlAttribute(normalizedLanguage)}"` : ''}><code${safeClass}>${safeCode}</code></pre>`;
+		}
+	}
+
 	function htmlToMarkdownSource(html: string) {
 		if (typeof document === 'undefined') return html;
 		const temp = document.createElement('div');
@@ -2248,13 +2402,18 @@
 					EditorView.updateListener.of(async (update) => {
 						if (!update.docChanged) return;
 						markdownContent = update.state.doc.toString();
-						markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownToAmnesiaHtml(markdownContent)));
+						markdownPreviewHtml = sanitizeHtml(
+							await marked.parse(markdownToAmnesiaHtml(markdownContent), { renderer: markdownRenderer })
+						);
 						markdownDirty = true;
 					})
 				]
 			})
 		});
 	}
+
+	const markdownRenderer = new marked.Renderer();
+	markdownRenderer.code = ({ text, lang }) => renderHighlightedCodeBlock(text, lang);
 
 	function initHtmlEditor() {
 		if (!markdownEditorNode) return;
@@ -2354,6 +2513,12 @@
 		tableContextMenuOpen = false;
 	}
 
+	function closeCodeBlockContextMenu() {
+		codeBlockContextMenuOpen = false;
+		codeBlockContextMenuBlockPos = null;
+		activeCodeBlockLanguage = '';
+	}
+
 	function closeSpaceContextMenu() {
 		spaceContextMenuOpen = false;
 		spaceContextMenuFolder = '';
@@ -2387,6 +2552,44 @@
 				ease: 'outExpo'
 			});
 		});
+	}
+
+	function openCodeBlockContextMenu(event: MouseEvent, blockPos: number, language: string) {
+		event.preventDefault();
+		tableContextMenuOpen = false;
+		codeBlockContextMenuBlockPos = blockPos;
+		activeCodeBlockLanguage = normalizeCodeLanguage(language);
+		codeBlockContextMenuPosition = {
+			top: event.clientY + 4,
+			left: Math.max(14, event.clientX - 8)
+		};
+		codeBlockContextMenuOpen = true;
+		requestAnimationFrame(() => {
+			if (!codeBlockContextMenuNode) return;
+			animate(codeBlockContextMenuNode, {
+				opacity: [0, 1],
+				translateY: [-8, 0],
+				scale: [0.97, 1],
+				duration: 200,
+				ease: 'outExpo'
+			});
+		});
+	}
+
+	function updateCodeBlockLanguage(language: string) {
+		if (!ensureEditableDocOrToast()) return;
+		if (!editor || codeBlockContextMenuBlockPos == null) return;
+		const normalized = normalizeCodeLanguage(language);
+		editor
+			.chain()
+			.focus()
+			.setTextSelection(codeBlockContextMenuBlockPos + 1)
+			.updateAttributes('codeBlock', {
+				language: normalized || null
+			})
+			.run();
+		closeCodeBlockContextMenu();
+		syncActiveFormattingState();
 	}
 
 	function openSpaceContextMenu(event: MouseEvent, category: SpaceCategory, folderName = '') {
@@ -3011,7 +3214,9 @@ async function importMarkdownFile(e: Event) {
 	const file = (e.currentTarget as HTMLInputElement).files?.[0];
 	if (!file) return;
 	markdownContent = await file.text();
-	markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownToAmnesiaHtml(markdownContent)));
+	markdownPreviewHtml = sanitizeHtml(
+		await marked.parse(markdownToAmnesiaHtml(markdownContent), { renderer: markdownRenderer })
+	);
 	if (editMode === 'rich') {
 		await applyMarkdownToEditor(markdownContent);
 	} else if (editMode === 'html') {
@@ -3230,7 +3435,7 @@ async function copyPageContent() {
 	async function applyMarkdownToEditor(markdown: string) {
 		if (!editor || !docs[activeDocIndex]) return;
 
-		const parsed = await marked.parse(markdownToAmnesiaHtml(markdown));
+		const parsed = await marked.parse(markdownToAmnesiaHtml(markdown), { renderer: markdownRenderer });
 		const normalizedHtml = sanitizeHtml(parsed);
 		editor.commands.setContent(normalizedHtml, { emitUpdate: false });
 		docs[activeDocIndex].content = editor.getHTML();
@@ -3245,7 +3450,9 @@ async function copyPageContent() {
 	async function handleMarkdownInput(e: Event) {
 		const target = e.currentTarget as HTMLTextAreaElement;
 		markdownContent = target.value;
-		markdownPreviewHtml = sanitizeHtml(await marked.parse(markdownToAmnesiaHtml(markdownContent)));
+		markdownPreviewHtml = sanitizeHtml(
+			await marked.parse(markdownToAmnesiaHtml(markdownContent), { renderer: markdownRenderer })
+		);
 		markdownDirty = true;
 	}
 
@@ -3618,8 +3825,17 @@ async function copyPageContent() {
 				element: editorNode,
 				extensions: [
 					StarterKit.configure({
+						codeBlock: false,
 						heading: {
 							levels: [1, 2, 3]
+						}
+					}),
+					CodeBlockLowlight.configure({
+						lowlight,
+						languageClassPrefix: 'language-',
+						defaultLanguage: 'plaintext',
+						HTMLAttributes: {
+							class: 'dashboard-code-block'
 						}
 					}),
 					TextStyle,
@@ -3665,12 +3881,23 @@ async function copyPageContent() {
 					handleDOMEvents: {
 						contextmenu: (_view, event) => {
 							const target = event.target;
+							const codeBlockContext = getCodeBlockContextFromTarget(target);
+							if (codeBlockContext) {
+								openCodeBlockContextMenu(
+									event as MouseEvent,
+									codeBlockContext.pos,
+									codeBlockContext.language
+								);
+								return true;
+							}
 							if (!(target instanceof HTMLElement)) return false;
 							const insideTable = target.closest('.tableWrapper, table, td, th');
 							if (!(insideTable instanceof HTMLElement)) {
 								closeTableContextMenu();
+								closeCodeBlockContextMenu();
 								return false;
 							}
+							closeCodeBlockContextMenu();
 							openTableContextMenu(event as MouseEvent);
 							return true;
 						}
@@ -5073,6 +5300,33 @@ async function copyPageContent() {
 				<span class="doc-menu-desc">移除所在列</span>
 			</span>
 		</button>
+	</div>
+{/if}
+
+{#if codeBlockContextMenuOpen}
+	<div class="doc-menu-backdrop" onclick={closeCodeBlockContextMenu}></div>
+	<div
+		bind:this={codeBlockContextMenuNode}
+		class="doc-menu doc-menu-floating code-block-context-menu"
+		style={`top:${codeBlockContextMenuPosition.top}px; left:${codeBlockContextMenuPosition.left}px;`}
+	>
+		<div class="doc-menu-headerline">
+			<span class="doc-menu-kicker">代码块语言</span>
+			<span class="doc-menu-caption">{getCodeLanguageLabel(activeCodeBlockLanguage) || '自动识别'}</span>
+		</div>
+		<div class="code-language-menu-grid">
+			{#each codeLanguageOptions as option}
+				<button
+					class="doc-menu-item code-language-menu-item {activeCodeBlockLanguage === option.value ? 'is-selected' : ''}"
+					type="button"
+					onclick={() => updateCodeBlockLanguage(option.value)}
+				>
+					<span class="doc-menu-copy">
+						<span class="doc-menu-title">{option.label}</span>
+					</span>
+				</button>
+			{/each}
+		</div>
 	</div>
 {/if}
 
@@ -6884,6 +7138,92 @@ async function copyPageContent() {
 		border-radius: 0;
 		font-size: inherit;
 		color: inherit;
+		display: block;
+		line-height: 1.72;
+		tab-size: 2;
+	}
+
+	:global(.tiptap pre[data-language]::before),
+	.markdown-preview-body :global(pre[data-language]::before) {
+		content: attr(data-language);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		margin-bottom: 0.8rem;
+		padding: 0.16rem 0.48rem;
+		border-radius: 999px;
+		background: color-mix(in oklab, var(--dashboard-accent) 14%, transparent);
+		color: color-mix(in oklab, var(--dashboard-code-fg) 78%, var(--dashboard-accent));
+		font-size: 0.68rem;
+		font-weight: 800;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	:global(.tiptap .hljs-comment),
+	:global(.tiptap .hljs-quote),
+	.markdown-preview-body :global(.hljs-comment),
+	.markdown-preview-body :global(.hljs-quote) {
+		color: color-mix(in oklab, var(--dashboard-code-fg) 46%, transparent);
+		font-style: italic;
+	}
+
+	:global(.tiptap .hljs-keyword),
+	:global(.tiptap .hljs-selector-tag),
+	:global(.tiptap .hljs-literal),
+	:global(.tiptap .hljs-title.class_),
+	:global(.tiptap .hljs-doctag),
+	.markdown-preview-body :global(.hljs-keyword),
+	.markdown-preview-body :global(.hljs-selector-tag),
+	.markdown-preview-body :global(.hljs-literal),
+	.markdown-preview-body :global(.hljs-title.class_),
+	.markdown-preview-body :global(.hljs-doctag) {
+		color: oklch(0.74 0.16 35);
+	}
+
+	:global(.tiptap .hljs-string),
+	:global(.tiptap .hljs-title),
+	:global(.tiptap .hljs-section),
+	:global(.tiptap .hljs-attribute),
+	:global(.tiptap .hljs-symbol),
+	:global(.tiptap .hljs-bullet),
+	:global(.tiptap .hljs-addition),
+	.markdown-preview-body :global(.hljs-string),
+	.markdown-preview-body :global(.hljs-title),
+	.markdown-preview-body :global(.hljs-section),
+	.markdown-preview-body :global(.hljs-attribute),
+	.markdown-preview-body :global(.hljs-symbol),
+	.markdown-preview-body :global(.hljs-bullet),
+	.markdown-preview-body :global(.hljs-addition) {
+		color: oklch(0.8 0.16 145);
+	}
+
+	:global(.tiptap .hljs-number),
+	:global(.tiptap .hljs-meta),
+	:global(.tiptap .hljs-built_in),
+	:global(.tiptap .hljs-type),
+	:global(.tiptap .hljs-params),
+	:global(.tiptap .hljs-template-variable),
+	.markdown-preview-body :global(.hljs-number),
+	.markdown-preview-body :global(.hljs-meta),
+	.markdown-preview-body :global(.hljs-built_in),
+	.markdown-preview-body :global(.hljs-type),
+	.markdown-preview-body :global(.hljs-params),
+	.markdown-preview-body :global(.hljs-template-variable) {
+		color: oklch(0.78 0.13 265);
+	}
+
+	:global(.tiptap .hljs-variable),
+	:global(.tiptap .hljs-name),
+	:global(.tiptap .hljs-operator),
+	:global(.tiptap .hljs-property),
+	:global(.tiptap .hljs-subst),
+	.markdown-preview-body :global(.hljs-variable),
+	.markdown-preview-body :global(.hljs-name),
+	.markdown-preview-body :global(.hljs-operator),
+	.markdown-preview-body :global(.hljs-property),
+	.markdown-preview-body :global(.hljs-subst) {
+		color: color-mix(in oklab, var(--dashboard-code-fg) 92%, transparent);
 	}
 
 	:global(.tiptap hr) {
@@ -7694,6 +8034,33 @@ async function copyPageContent() {
 		margin: 0.15rem 0.25rem;
 		height: 1px;
 		background: color-mix(in oklab, var(--dashboard-fg) 8%, transparent);
+	}
+
+	.code-block-context-menu {
+		width: min(16rem, calc(100vw - 2rem));
+		max-width: min(16rem, calc(100vw - 2rem));
+	}
+
+	.code-language-menu-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.28rem;
+	}
+
+	.code-language-menu-item {
+		padding: 0.5rem 0.55rem;
+		min-height: 2.25rem;
+	}
+
+	.code-language-menu-item .doc-menu-title {
+		font-size: 0.76rem;
+		line-height: 1.15;
+	}
+
+	.code-language-menu-item.is-selected {
+		background: color-mix(in oklab, var(--dashboard-accent) 16%, var(--dashboard-panel));
+		border-color: color-mix(in oklab, var(--dashboard-accent) 30%, transparent);
+		box-shadow: inset 0 1px 0 color-mix(in oklab, white 10%, transparent);
 	}
 
 	.doc-menu-item.is-danger .doc-menu-icon {

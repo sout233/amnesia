@@ -84,7 +84,7 @@
 </script>
 
 <svelte:head>
-	<title>Amnesia - 个人知识管理</title>
+	<title>Amnesia - 呃……</title>
 </svelte:head>
 
 <div class="relative min-h-[92vh] flex flex-col justify-between items-center px-4 overflow-hidden select-none">
